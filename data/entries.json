@@ -1,1 +1,17 @@
-[]
+[
+  {
+    "id": "mvwivgz7jxnvi7",
+    "date": "2026-10-31",
+    "name": "Sk Mohammed Bhai Qazi",
+    "department": "Mawaid",
+    "counts": {
+      "1000": 2,
+      "10000": 11,
+      "25000": 1000
+    },
+    "notes": 1013,
+    "total": 25112000,
+    "createdAt": "2026-10-31T14:54:41.587Z",
+    "updatedAt": "2026-10-31T14:54:41.587Z"
+  }
+]
