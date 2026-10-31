@@ -66,8 +66,18 @@
             <span class="step-num">1</span>
             <div>
               <h2>Count the notes</h2>
-              <p>Tap <b>+</b> / <b>−</b> or type how many of each note</p>
+              <p>Choose the currency, then tap <b>+</b> / <b>−</b> or type how many of each note</p>
             </div>
+          </div>
+
+          <div class="cur-switch" id="curSwitch" role="tablist" aria-label="Currency" data-active="IQD">
+            <span class="cur-slider" aria-hidden="true"></span>
+            <button class="cur-tab active" data-cur="IQD" type="button" role="tab" aria-selected="true">
+              <span class="cur-sym">ع.د</span><span class="cur-name"><b>IQD</b><small>Iraqi Dinar</small></span>
+            </button>
+            <button class="cur-tab" data-cur="USD" type="button" role="tab" aria-selected="false">
+              <span class="cur-sym">$</span><span class="cur-name"><b>USD</b><small>US Dollar</small></span>
+            </button>
           </div>
 
           <div class="calc-head" aria-hidden="true">
@@ -82,7 +92,7 @@
             </div>
             <div class="total-block">
               <span class="total-label">Total</span>
-              <div class="total-amount"><small>IQD</small><strong id="grandTotal">0</strong></div>
+              <div class="total-amount"><small id="totalCur">IQD</small><strong id="grandTotal">0</strong></div>
             </div>
           </div>
         </div>
@@ -144,7 +154,7 @@
       <div class="stats">
         <div class="stat stat-main">
           <span class="stat-label">Total shown</span>
-          <span class="stat-value"><small>IQD</small> <b id="statTotal">0</b></span>
+          <span class="stat-lines" id="statTotal"></span>
         </div>
         <div class="stat">
           <span class="stat-label">Entries</span>
@@ -153,6 +163,11 @@
       </div>
 
       <div class="card filters-card">
+        <div class="cur-filter" id="curFilter" role="tablist" aria-label="Show currency">
+          <button class="seg active" data-cur="" type="button">All</button>
+          <button class="seg" data-cur="IQD" type="button">IQD</button>
+          <button class="seg" data-cur="USD" type="button">USD</button>
+        </div>
         <div class="filters-top">
           <div class="search">
             <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="6.5" fill="none" stroke="currentColor" stroke-width="2.2"/><path d="M16 16l4 4" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"/></svg>
@@ -220,7 +235,7 @@
         <svg viewBox="0 0 52 52" aria-hidden="true"><circle cx="26" cy="26" r="24" fill="none"/><path d="M14 27l8 8 16-17" fill="none"/></svg>
       </div>
       <h3>Saved!</h3>
-      <p class="success-amount"><small>IQD</small> <b id="successAmount">0</b></p>
+      <p class="success-amount"><small id="successCur">IQD</small> <b id="successAmount">0</b></p>
       <p class="success-who" id="successWho"></p>
       <button class="btn btn-primary" id="successClose" type="button">New entry</button>
     </div>

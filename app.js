@@ -16,7 +16,12 @@
     sharedPath: 'data/app-config.json',
   };
   const SYNC_EVERY_MS = 30000;
-  const DENOMS = [50000, 25000, 10000, 5000, 1000, 500, 250];
+  const CURRENCIES = {
+    IQD: [50000, 25000, 10000, 5000, 1000, 500, 250],
+    USD: [100, 50, 20, 10, 5, 1],
+  };
+  const curOf = (e) => (e && e.currency === 'USD' ? 'USD' : 'IQD'); // older entries are IQD
+  const money = (cur, n) => `${cur} ${fmt(n)}`;
   const DEPARTMENTS = [
     'Mawaid',
     'Maintenance & Housekeeping',
@@ -58,7 +63,6 @@
     parseDate(s).toLocaleDateString('en-GB', opts);
   const timeOf = (iso) => { try { return new Date(iso).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' }); } catch { return ''; } };
   const uid = () => Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
-  const initials = (name) => name.trim().split(/\s+/).slice(0, 2).map((w) => w[0] || '').join('').toUpperCase() || '?';
 
   const store = {
     get(k, d) { try { const v = localStorage.getItem(k); return v == null ? d : JSON.parse(v); } catch { return d; } },
@@ -68,7 +72,11 @@
 
   // ---------- State ----------
   const state = {
-    counts: Object.fromEntries(DENOMS.map((d) => [d, 0])),
+    currency: 'IQD',
+    countsBy: {
+      IQD: Object.fromEntries(CURRENCIES.IQD.map((d) => [d, 0])),
+      USD: Object.fromEntries(CURRENCIES.USD.map((d) => [d, 0])),
+    },
     entries: store.get(KEY.entries, []),
     pending: store.get(KEY.pending, []),
     token: store.get(KEY.token, ''),
@@ -81,6 +89,10 @@
     filters: { range: 'all' },
     openId: null,
   };
+
+  // The counts and note list of the currency tab currently selected
+  Object.defineProperty(state, 'counts', { get: () => state.countsBy[state.currency] });
+  const denoms = () => CURRENCIES[state.currency];
 
   const persist = () => {
     store.set(KEY.entries, state.entries);
@@ -256,8 +268,8 @@
     if (items.length === 1) {
       const e = items[0];
       return e.deleted
-        ? `Delete entry: IQD ${fmt(e.total)} - ${e.name} (${e.department})`
-        : `Add entry: IQD ${fmt(e.total)} - ${e.name} (${e.department}) on ${e.date}`;
+        ? `Delete entry: ${money(curOf(e), e.total)} - ${e.name} (${e.department})`
+        : `Add entry: ${money(curOf(e), e.total)} - ${e.name} (${e.department}) on ${e.date}`;
     }
     return `Sync ${items.length} entries from Cash Book`;
   }
@@ -340,9 +352,11 @@
   const rowsEl = $('#rows');
 
   function buildRows() {
-    rowsEl.innerHTML = DENOMS.map((d) => `
+    const cur = state.currency;
+    const sym = cur === 'USD' ? '$' : '';
+    rowsEl.innerHTML = denoms().map((d) => `
       <div class="row" data-d="${d}">
-        <div class="denom"><span class="note note-${d}">${fmt(d)}</span></div>
+        <div class="denom"><span class="note note-${cur}-${d}">${sym}${fmt(d)}</span></div>
         <div class="stepper">
           <button class="step minus" data-act="minus" type="button" aria-label="One less ${fmt(d)} note">−</button>
           <input class="count" type="text" inputmode="numeric" pattern="[0-9]*" maxlength="5" placeholder="0" aria-label="Number of ${fmt(d)} notes" autocomplete="off">
@@ -352,9 +366,9 @@
       </div>`).join('');
   }
 
-  function totals(counts = state.counts) {
+  function totals(counts = state.counts, list = denoms()) {
     let total = 0, notes = 0;
-    for (const d of DENOMS) { const c = Number(counts[d]) || 0; total += c * d; notes += c; }
+    for (const d of list) { const c = Number(counts[d]) || 0; total += c * d; notes += c; }
     return { total, notes };
   }
 
@@ -369,6 +383,7 @@
       if (bumpDenom === d) { row.classList.remove('bump'); void row.offsetWidth; row.classList.add('bump'); }
     }
     const { total, notes } = totals();
+    $('#totalCur').textContent = state.currency;
     tween($('#grandTotal'), total);
     $('#notesCount').textContent = `${fmt(notes)} note${notes === 1 ? '' : 's'}`;
     renderSummary();
@@ -419,8 +434,26 @@
   rowsEl.addEventListener('focusout', () => renderCalc());
 
   $('#clearCounts').addEventListener('click', () => {
-    DENOMS.forEach((d) => (state.counts[d] = 0));
+    denoms().forEach((d) => (state.counts[d] = 0));
     renderCalc();
+  });
+
+  // ---------- Currency tabs ----------
+  function setCurrency(cur, { animate = true } = {}) {
+    if (!CURRENCIES[cur]) cur = 'IQD';
+    state.currency = cur;
+    const sw = $('#curSwitch');
+    sw.dataset.active = cur;
+    $('#calcCard').dataset.cur = cur;
+    $$('.cur-tab', sw).forEach((t) => { const on = t.dataset.cur === cur; t.classList.toggle('active', on); t.setAttribute('aria-selected', String(on)); });
+    buildRows();
+    if (animate) { rowsEl.classList.remove('swap'); void rowsEl.offsetWidth; rowsEl.classList.add('swap'); }
+    $('#grandTotal').dataset.v = totals().total; // switch the total instantly, no count-up
+    renderCalc();
+  }
+  $('#curSwitch').addEventListener('click', (e) => {
+    const t = e.target.closest('.cur-tab');
+    if (t && t.dataset.cur !== state.currency) setCurrency(t.dataset.cur);
   });
 
   // ---------- Details form ----------
@@ -444,7 +477,7 @@
     const dept = deptSelect.value;
     const el = $('#summaryLine');
     if (!total && !name) { el.textContent = 'Enter notes and details above'; return; }
-    el.innerHTML = `<b>IQD ${fmt(total)}</b>${name ? ` to <b>${esc(name)}</b>` : ''}${dept ? ` · ${esc(dept)}` : ''}`;
+    el.innerHTML = `<b>${money(state.currency, total)}</b>${name ? ` to <b>${esc(name)}</b>` : ''}${dept ? ` · ${esc(dept)}` : ''}`;
   }
 
   [nameInput, deptSelect].forEach((el) => el.addEventListener('input', () => {
@@ -457,18 +490,22 @@
   dateInput.addEventListener('change', () => { if (!dateInput.value) dateInput.value = isoDate(); updateDateHint(); });
 
   function saveDraft() {
-    store.set(KEY.draft, { counts: state.counts, name: nameInput.value, dept: deptSelect.value, day: isoDate() });
+    store.set(KEY.draft, { currency: state.currency, countsBy: state.countsBy, name: nameInput.value, dept: deptSelect.value, day: isoDate() });
   }
   function loadDraft() {
     const d = store.get(KEY.draft, null);
     if (!d) return;
-    if (d.counts) for (const k of DENOMS) state.counts[k] = Number(d.counts[k]) || 0;
+    const saved = d.countsBy || (d.counts ? { IQD: d.counts } : {});
+    for (const cur of Object.keys(CURRENCIES)) {
+      for (const k of CURRENCIES[cur]) state.countsBy[cur][k] = Number(saved[cur] && saved[cur][k]) || 0;
+    }
+    if (CURRENCIES[d.currency]) state.currency = d.currency;
     nameInput.value = d.name || '';
     if (d.dept && DEPARTMENTS.includes(d.dept)) deptSelect.value = d.dept;
   }
 
   function resetForm() {
-    DENOMS.forEach((d) => (state.counts[d] = 0));
+    for (const cur of Object.keys(CURRENCIES)) CURRENCIES[cur].forEach((d) => (state.countsBy[cur][d] = 0));
     nameInput.value = '';
     deptSelect.value = '';
     deptSelect.classList.add('empty');
@@ -507,9 +544,10 @@
 
     const now = new Date().toISOString();
     const counts = {};
-    for (const d of DENOMS) if (state.counts[d]) counts[d] = state.counts[d];
+    for (const d of denoms()) if (state.counts[d]) counts[d] = state.counts[d];
     const entry = {
       id: uid(),
+      currency: state.currency,
       date: dateInput.value || isoDate(),
       name,
       department: dept,
@@ -536,6 +574,7 @@
 
   let successTimer;
   function showSuccess(e) {
+    $('#successCur').textContent = curOf(e);
     $('#successAmount').textContent = fmt(e.total);
     $('#successWho').textContent = `given to ${e.name} · ${e.department}`;
     $('#successOverlay').hidden = false;
@@ -561,6 +600,7 @@
     return {
       name: $('#fName').value.trim().toLowerCase(),
       dept: $('#fDept').value,
+      cur: state.filters.cur || '',
       from: $('#fFrom').value,
       to: $('#fTo').value,
       min: digits($('#fMin').value) ? Number(digits($('#fMin').value)) : null,
@@ -573,6 +613,7 @@
     return activeEntries().filter((e) =>
       (!f.name || e.name.toLowerCase().includes(f.name)) &&
       (!f.dept || e.department === f.dept) &&
+      (!f.cur || curOf(e) === f.cur) &&
       (!f.from || e.date >= f.from) &&
       (!f.to || e.date <= f.to) &&
       (f.min == null || e.total >= f.min) &&
@@ -589,7 +630,10 @@
     $('#filterCount').hidden = !extra;
     $('#filterCount').textContent = extra;
 
-    $('#statTotal').textContent = fmt(list.reduce((s, e) => s + e.total, 0));
+    const sums = sumByCurrency(list);
+    const statEl = $('#statTotal');
+    statEl.classList.toggle('two', sums.length > 1);
+    statEl.innerHTML = (sums.length ? sums : [['IQD', 0]]).map(([c, v]) => `<span><small>${c}</small><b>${fmt(v)}</b></span>`).join('');
     $('#statCount').textContent = fmt(list.length);
     const badge = $('#historyBadge');
     badge.hidden = !all.length;
@@ -615,37 +659,52 @@
     let i = 0;
     for (const [date, items] of groups) {
       const label = date === today ? 'Today' : date === yesterday ? 'Yesterday' : prettyDate(date, { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' });
-      const dayTotal = items.reduce((s, e) => s + e.total, 0);
+      const dayTotals = sumByCurrency(items).map(([c, v]) => `<span>${money(c, v)}</span>`).join('');
       html += `<div class="day-group" style="animation-delay:${Math.min(i++, 8) * 40}ms">
-        <div class="day-head"><h3>${esc(label)}</h3><span>IQD ${fmt(dayTotal)}</span></div>
+        <div class="day-head"><h3>${esc(label)}</h3><div class="day-totals">${dayTotals}</div></div>
         ${items.map((e) => entryCard(e, pend.has(e.id))).join('')}
       </div>`;
     }
     listEl.innerHTML = html;
   }
 
+  // [['IQD', total], ['USD', total]] — only the currencies that appear
+  function sumByCurrency(list) {
+    const sums = {};
+    for (const e of list) { const c = curOf(e); sums[c] = (sums[c] || 0) + e.total; }
+    return Object.keys(CURRENCIES).filter((c) => c in sums).map((c) => [c, sums[c]]);
+  }
+
   function entryCard(e, isPending) {
     const [av, pbg, pfg] = DEPT_COLORS[e.department] || ['#12614a', '#e5f2ec', '#12614a'];
-    const rows = DENOMS.filter((d) => e.counts && e.counts[d]).map((d) => `
-      <div class="bd-row"><span class="note note-${d}">${fmt(d)}</span><span class="x">× ${fmt(e.counts[d])}</span><span class="v">${fmt(d * e.counts[d])}</span></div>`).join('');
+    const cur = curOf(e);
+    const sym = cur === 'USD' ? '$' : '';
+    const d0 = parseDate(e.date);
+    const rows = CURRENCIES[cur].filter((d) => e.counts && e.counts[d]).map((d) => `
+      <div class="bd-row"><span class="note note-${cur}-${d}">${sym}${fmt(d)}</span><span class="x">× ${fmt(e.counts[d])}</span><span class="v">${fmt(d * e.counts[d])}</span></div>`).join('');
     const open = state.openId === e.id;
     return `
       <article class="entry${open ? ' open' : ''}" data-id="${esc(e.id)}">
         <button class="entry-main" type="button" aria-expanded="${open}">
-          <span class="avatar" style="--av:${av}">${esc(initials(e.name))}</span>
+          <span class="date-tile" style="--tile:${av}" aria-label="${esc(prettyDate(e.date))}">
+            <span class="dt-month">${esc(d0.toLocaleDateString('en-GB', { month: 'short' }))}</span>
+            <span class="dt-day">${d0.getDate()}</span>
+            <span class="dt-week">${esc(d0.toLocaleDateString('en-GB', { weekday: 'short' }))}</span>
+          </span>
           <span class="who">
             <strong>${esc(e.name)}</strong>
+            <span class="when">${esc(prettyDate(e.date, { weekday: 'short', day: 'numeric', month: 'short', year: 'numeric' }))}</span>
             <span class="dept-pill" style="--pill-bg:${pbg};--pill-fg:${pfg}">${esc(e.department)}</span>
           </span>
           <span class="amt">
-            <b><small>IQD</small>${fmt(e.total)}</b>
+            <b class="${cur === 'USD' ? 'usd' : ''}"><small>${cur}</small>${fmt(e.total)}</b>
             <span>${isPending ? '<span class="pending-tag">● Waiting to upload</span>' : esc(timeOf(e.createdAt))}</span>
           </span>
         </button>
         <div class="entry-detail"><div><div class="detail-inner">
           <div class="breakdown">
             ${rows}
-            <div class="bd-total"><span>Total · ${fmt(e.notes || 0)} notes</span><span>IQD ${fmt(e.total)}</span></div>
+            <div class="bd-total"><span>Total · ${fmt(e.notes || 0)} notes</span><span>${money(cur, e.total)}</span></div>
           </div>
           <div class="detail-foot">
             <small>Saved ${esc(prettyDate(e.date, { day: 'numeric', month: 'short', year: 'numeric' }))} at ${esc(timeOf(e.createdAt))}</small>
@@ -660,7 +719,7 @@
     if (del) {
       const e = state.entries.find((x) => x.id === del.dataset.del);
       if (!e) return;
-      confirmBox('Delete this entry?', `IQD ${fmt(e.total)} given to ${e.name} (${e.department}) will be removed from the history for everyone.`, 'Delete', () => {
+      confirmBox('Delete this entry?', `${money(curOf(e), e.total)} given to ${e.name} (${e.department}) will be removed from the history for everyone.`, 'Delete', () => {
         const tomb = { ...e, deleted: true, updatedAt: new Date().toISOString() };
         state.entries = merge(state.entries, [tomb]);
         state.pending.push(tomb);
@@ -704,7 +763,14 @@
     el.value = d ? fmt(Number(d)) : '';
     renderHistory();
   }));
+  function setCurFilter(cur) {
+    state.filters.cur = cur;
+    $$('#curFilter .seg').forEach((b) => b.classList.toggle('active', b.dataset.cur === cur));
+    renderHistory();
+  }
+  $('#curFilter').addEventListener('click', (e) => { const b = e.target.closest('.seg'); if (b) setCurFilter(b.dataset.cur); });
   $('#clearFilters').addEventListener('click', () => {
+    setCurFilter('');
     ['#fName', '#fFrom', '#fTo', '#fMin', '#fMax'].forEach((s) => ($(s).value = ''));
     $('#fDept').value = '';
     setRange('all');
@@ -721,12 +787,17 @@
     const list = filtered();
     if (!list.length) return toast('There is nothing to download', 'warn');
     const q = (v) => `"${String(v).replace(/"/g, '""')}"`;
-    const head = ['Date', 'Name', 'Department', ...DENOMS.map((d) => `${fmt(d)} notes`), 'Total notes', 'Total (IQD)', 'Saved at'];
+    // Only include note columns for the currencies in the list
+    const curs = sumByCurrency(list).map(([c]) => c);
+    const cols = curs.flatMap((c) => CURRENCIES[c].map((d) => [c, d]));
+    const head = ['Date', 'Name', 'Department', 'Currency', ...cols.map(([c, d]) => `${c} ${fmt(d)} notes`), 'Total notes', 'Total amount', 'Saved at'];
+    const blank = cols.map(() => '');
     const lines = [head.map(q).join(',')];
     for (const e of list) {
-      lines.push([e.date, e.name, e.department, ...DENOMS.map((d) => (e.counts && e.counts[d]) || 0), e.notes || 0, e.total, new Date(e.createdAt).toLocaleString()].map(q).join(','));
+      const c = curOf(e);
+      lines.push([e.date, e.name, e.department, c, ...cols.map(([cc, d]) => (cc === c && e.counts && e.counts[d]) || ''), e.notes || 0, e.total, new Date(e.createdAt).toLocaleString()].map(q).join(','));
     }
-    lines.push(['', '', 'TOTAL', ...DENOMS.map(() => ''), '', list.reduce((s, e) => s + e.total, 0), ''].map(q).join(','));
+    for (const [c, v] of sumByCurrency(list)) lines.push(['', '', `TOTAL ${c}`, c, ...blank, '', v, ''].map(q).join(','));
     const blob = new Blob(['﻿' + lines.join('\r\n')], { type: 'text/csv;charset=utf-8' });
     const a = document.createElement('a');
     a.href = URL.createObjectURL(blob);
@@ -851,8 +922,8 @@
     $('#todayLabel').textContent = prettyDate(isoDate());
     $('#repoNameLabel').textContent = CONFIG.repo;
     fillDepartments();
-    buildRows();
     loadDraft();
+    setCurrency(state.currency, { animate: false });
     deptSelect.classList.toggle('empty', !deptSelect.value);
     dateInput.value = isoDate();
     updateDateHint();
