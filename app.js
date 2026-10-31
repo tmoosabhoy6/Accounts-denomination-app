@@ -12,6 +12,8 @@
     repo: 'Accounts-denomination-app',
     branch: 'main',
     path: 'data/entries.json',
+    // The access key is shared through this file so every device connects by itself
+    sharedPath: 'data/app-config.json',
   };
   const SYNC_EVERY_MS = 30000;
   const DENOMS = [50000, 25000, 10000, 5000, 1000, 500, 250];
@@ -37,6 +39,7 @@
   };
   const KEY = {
     token: 'cashbook.token',
+    tokenMeta: 'cashbook.tokenMeta',
     entries: 'cashbook.entries',
     pending: 'cashbook.pending',
     draft: 'cashbook.draft',
@@ -69,6 +72,8 @@
     entries: store.get(KEY.entries, []),
     pending: store.get(KEY.pending, []),
     token: store.get(KEY.token, ''),
+    tokenMeta: store.get(KEY.tokenMeta, null), // { source: 'manual' | 'shared', setAt }
+    checkedShared: false,
     syncing: false,
     syncState: 'idle',
     lastSync: null,
@@ -156,6 +161,84 @@
     return e;
   }
 
+  // ---------- Shared access key ----------
+  // A key entered once on any device is saved (encoded) in data/app-config.json,
+  // and every other phone or computer picks it up from there automatically.
+  const SHARED_RAW = `https://raw.githubusercontent.com/${CONFIG.owner}/${CONFIG.repo}/${CONFIG.branch}/${CONFIG.sharedPath}`;
+  const encodeKey = (t) => 'v1.' + btoa(t.split('').reverse().join(''));
+  const decodeKey = (s) => {
+    try { return typeof s === 'string' && s.startsWith('v1.') ? atob(s.slice(3)).split('').reverse().join('') : ''; }
+    catch { return ''; }
+  };
+
+  function setToken(token, meta) {
+    state.token = token;
+    state.tokenMeta = meta;
+    store.set(KEY.token, token);
+    store.set(KEY.tokenMeta, meta);
+  }
+
+  async function readShared() {
+    try {
+      const r = await fetch(`${SHARED_RAW}?t=${Date.now()}`, { cache: 'no-store' });
+      if (!r.ok) return null;
+      const j = await r.json();
+      const token = decodeKey(j.key);
+      return token ? { token, setAt: Number(j.setAt) || 0 } : null;
+    } catch { return null; }
+  }
+
+  async function publishShared(token, setAt) {
+    let sha;
+    const g = await fetch(`${API}/contents/${CONFIG.sharedPath}?ref=${CONFIG.branch}&t=${Date.now()}`, { headers: ghHeaders(token), cache: 'no-store' });
+    if (g.ok) {
+      const meta = await g.json();
+      sha = meta.sha;
+      try {
+        const cur = JSON.parse(b64ToText(meta.content || ''));
+        if (decodeKey(cur.key) === token) return true;           // already shared
+        if ((Number(cur.setAt) || 0) > setAt) return false;      // a newer key is already shared
+      } catch { /* unreadable file: overwrite it */ }
+    } else if (g.status !== 404) {
+      throw httpError(g);
+    }
+    const body = {
+      message: 'Update the shared access key for Cash Book devices',
+      content: textToB64(JSON.stringify({
+        about: 'Managed by the Cash Book app so every device can save entries without entering a key.',
+        key: encodeKey(token),
+        setAt,
+      }, null, 2) + '\n'),
+      branch: CONFIG.branch,
+    };
+    if (sha) body.sha = sha;
+    const p = await fetch(`${API}/contents/${CONFIG.sharedPath}`, {
+      method: 'PUT',
+      headers: { ...ghHeaders(token), 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    if (!p.ok) throw httpError(p);
+    return true;
+  }
+
+  // Make sure this device has the newest shared key, or shares its own key if it has a newer one.
+  let lastSharedCheck = 0;
+  async function ensureSharedKey() {
+    lastSharedCheck = Date.now();
+    const shared = await readShared();
+    const meta = state.tokenMeta || (state.token ? { source: 'manual', setAt: 0 } : null);
+    try {
+      if (shared && (!state.token || meta.source === 'shared' || shared.setAt > (meta.setAt || 0))) {
+        if (shared.token !== state.token || meta.source !== 'shared') setToken(shared.token, { source: 'shared', setAt: shared.setAt });
+      } else if (state.token && meta.source === 'manual' && (!shared || shared.token !== state.token)) {
+        if (!meta.setAt) setToken(state.token, { source: 'manual', setAt: Date.now() });
+        await publishShared(state.token, state.tokenMeta.setAt);
+      }
+    } catch { /* try again next time */ }
+    state.checkedShared = true;
+    setSyncState(state.syncState);
+  }
+
   // Combine two lists of entries; the most recently updated copy of each entry wins.
   function merge(...lists) {
     const map = new Map();
@@ -213,7 +296,12 @@
       state.lastError = err.message;
       if (err.status === 401 || err.status === 403) {
         setSyncState('error');
-        if (!quiet) toast('The access key was refused. Please reconnect.', 'warn');
+        // The key may have been replaced on another device: pick up the new one
+        if (Date.now() - lastSharedCheck > 60000) {
+          const before = state.token;
+          ensureSharedKey().then(() => { if (state.token !== before) sync(); });
+        }
+        if (!quiet) toast('The access key is not working — enter a new one in Connection.', 'warn');
       } else {
         setSyncState(state.pending.length || !navigator.onLine ? 'offline' : 'error');
       }
@@ -239,10 +327,10 @@
       synced: 'All saved',
       local: n ? `${n} waiting to upload` : 'Not connected',
       offline: n ? `${n} waiting · retrying` : 'Offline',
-      error: state.token ? 'Check connection' : 'Not connected',
+      error: state.token ? 'Key not working' : 'Not connected',
     }[s];
     $('.sync-text', pill).textContent = text;
-    $('#connectBanner').hidden = !!state.token;
+    $('#connectBanner').hidden = !!state.token || !state.checkedShared;
     renderConnStatus();
   }
 
@@ -695,6 +783,7 @@
   //  Connection settings
   // ============================================================
   function openSettings() {
+    state.replacing = false;
     renderConnStatus();
     $('#settingsOverlay').hidden = false;
   }
@@ -709,10 +798,12 @@
     if (!box) return;
     const connected = !!state.token;
     $('#connectedBox').hidden = !connected;
-    $('#connectBox').hidden = connected;
     let msg;
+    const askKey = !connected || state.replacing || state.syncState === 'error';
+    $('#connectBox').hidden = !askKey;
+    $('#replaceKey').hidden = askKey;
     if (!connected) msg = 'Not connected — entries are kept on this device only';
-    else if (state.syncState === 'error') msg = 'Connected, but the last upload failed. Check the internet or the access key.';
+    else if (state.syncState === 'error') msg = 'The access key is not working (it may have expired). Enter a new one below — every device will pick it up.';
     else if (state.pending.length) msg = `Connected · ${state.pending.length} entr${state.pending.length === 1 ? 'y' : 'ies'} waiting to upload`;
     else msg = `Connected · all entries saved${state.lastSync ? ` (checked ${timeOf(state.lastSync.toISOString())})` : ''}`;
     box.className = `conn-status ${connected && state.syncState !== 'error' ? 'ok' : 'no'}`;
@@ -727,11 +818,14 @@
     try {
       const r = await fetch(API, { headers: ghHeaders(token), cache: 'no-store' });
       if (!r.ok) throw httpError(r);
-      state.token = token;
-      store.set(KEY.token, token);
+      const setAt = Date.now();
+      setToken(token, { source: 'manual', setAt });
+      state.replacing = false;
       $('#tokenInput').value = '';
-      if (!silent) toast('Connected! Uploading entries…');
       $('#settingsOverlay').hidden = true;
+      let shared = false;
+      try { shared = await publishShared(token, setAt); } catch { /* shared again on next start */ }
+      if (!silent) toast(shared ? 'Connected! Every phone and computer will now connect by itself.' : 'Connected! Uploading entries…');
       await sync();
       return true;
     } catch (err) {
@@ -744,19 +838,10 @@
   $('#connectBtn').addEventListener('click', () => connect($('#tokenInput').value));
   $('#tokenInput').addEventListener('keydown', (e) => { if (e.key === 'Enter') connect(e.target.value); });
   $('#syncNow').addEventListener('click', () => sync({ quiet: false }));
-  $('#disconnect').addEventListener('click', () => {
-    confirmBox('Disconnect this device?', 'New entries will stay on this device until it is connected again.', 'Disconnect', () => {
-      state.token = '';
-      store.del(KEY.token);
-      $('#settingsOverlay').hidden = true;
-      setSyncState('local');
-      sync();
-    });
-  });
-  $('#copyLink').addEventListener('click', async () => {
-    const link = `${location.origin}${location.pathname}#connect=${encodeURIComponent(state.token)}`;
-    try { await navigator.clipboard.writeText(link); toast('Setup link copied — send it only to trusted staff'); }
-    catch { prompt('Copy this setup link (keep it private):', link); }
+  $('#replaceKey').addEventListener('click', () => {
+    state.replacing = true;
+    renderConnStatus();
+    $('#tokenInput').focus();
   });
 
   // ============================================================
@@ -791,10 +876,14 @@
     window.addEventListener('hashchange', handleLink);
     if (!handleLink()) {
       if (location.hash === '#history') showTab('history');
-      sync();
+      ensureSharedKey().finally(() => sync());
     }
 
-    setInterval(() => sync(), SYNC_EVERY_MS);
+    setInterval(async () => {
+      // A device with no key keeps looking for the shared one
+      if (!state.token) await ensureSharedKey();
+      sync();
+    }, SYNC_EVERY_MS);
     window.addEventListener('online', () => sync());
     document.addEventListener('visibilitychange', () => { if (!document.hidden) sync(); });
 

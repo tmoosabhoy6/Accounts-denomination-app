@@ -22,20 +22,26 @@ entries every 30 seconds, so several phones can be used at the same time.
 If the internet drops, entries stay on the phone and upload automatically
 when it is back.
 
-## One-time setup for each phone (done by the admin)
+## Access key (entered once, on any one device)
 
-Saving to GitHub needs an access key. Reading the history does not.
+Saving to GitHub needs an access key. It only has to be entered **once, on any
+device**: the app then stores it (encoded) in `data/app-config.json`, and every
+other phone or computer that opens the app picks it up and connects by itself.
+
+To create a key:
 
 1. Go to <https://github.com/settings/personal-access-tokens/new>.
 2. **Repository access** → *Only select repositories* → `Accounts-denomination-app`.
-3. **Permissions → Contents** → *Read and write*.
-4. Generate, copy the key, open the app, tap the status button at the top right
-   (or **Connect**) and paste it.
+3. **Permissions → Contents** → *Read and write*. Pick the longest expiration offered.
+4. Generate, copy the key, open the app, tap the status button at the top right and paste it.
 
-To set up other phones, open the status button and tap
-**Copy setup link for another phone**, then send that link privately — opening it
-connects the phone in one tap. Keep the key and link private: anyone who has it
-can change the data file.
+When the key expires, the status button shows **Key not working**. Enter a new key
+on any one device and all the others switch to it automatically.
+
+> Because the repository is public, the shared key can be read by anyone who
+> looks at `data/app-config.json`. Keep the key limited to this one repository
+> with only *Contents* permission, so the most it can do is change files in this
+> project (everything stays recoverable through the git history).
 
 ## Hosting
 

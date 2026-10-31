@@ -475,3 +475,4 @@ main { max-width: 1120px; margin: 0 auto; padding: 6px 16px 48px; }
 .filters-more-inner { padding: 0 4px 4px; margin: 0 -4px; }
 .filters-grid > .field { min-width: 0; }
 .filters-grid input[type="date"] { min-width: 0; padding: 0 12px; }
+#connectedBox + .connect-box { margin-top: 18px; padding-top: 18px; border-top: 1px dashed var(--line); }
