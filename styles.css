@@ -540,3 +540,11 @@ main { max-width: 1120px; margin: 0 auto; padding: 6px 16px 48px; }
 .who .when { font-size: 13.5px; font-weight: 700; color: var(--ink-2); }
 .amt b.usd { color: #1f4b7a; }
 .day-head .day-totals { display: flex; gap: 4px 12px; flex-wrap: wrap; justify-content: flex-end; }
+
+/* ---------------- Departments ---------------- */
+.link-btn.add-dept-link { margin: -4px 0 14px; color: var(--brand-2); font-size: 14px; }
+.custom-depts { margin-top: 20px; padding-top: 16px; border-top: 1px dashed var(--line); display: grid; gap: 10px; }
+.custom-depts ul { list-style: none; margin: 0; padding: 0; display: grid; gap: 8px; }
+.custom-depts li { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+.custom-depts .dept-pill { font-size: 13.5px; padding: 5px 12px; }
+.link-del { border: 0; background: none; padding: 6px 4px; color: var(--danger); font-size: 13.5px; font-weight: 700; }

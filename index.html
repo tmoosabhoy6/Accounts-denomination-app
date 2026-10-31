@@ -124,6 +124,7 @@
               </div>
               <span class="field-error">Please choose a department</span>
             </label>
+            <button id="openDeptManager" class="link-btn add-dept-link" type="button">＋ Add a new department</button>
 
             <label class="field">
               <span class="field-label">Date <em id="dateHint">(today)</em></span>
@@ -249,6 +250,25 @@
       <div class="dialog-actions">
         <button class="btn btn-ghost" id="confirmNo" type="button">Keep it</button>
         <button class="btn btn-danger" id="confirmYes" type="button">Delete</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Add a department -->
+  <div id="deptOverlay" class="overlay" hidden>
+    <div class="dialog" role="dialog" aria-modal="true" aria-labelledby="deptTitle">
+      <button class="close-x" data-close type="button" aria-label="Close">×</button>
+      <h3 id="deptTitle">Add a department</h3>
+      <p class="muted">The new department appears in the list on every phone and computer.</p>
+      <label class="field" id="deptField2">
+        <span class="field-label">Department name</span>
+        <input id="deptName" type="text" maxlength="50" placeholder="e.g. Kitchen" autocomplete="off">
+        <span class="field-error">Please type the department name</span>
+      </label>
+      <button class="btn btn-primary btn-block" id="deptAddBtn" type="button">Add department</button>
+      <div id="customDeptWrap" class="custom-depts" hidden>
+        <span class="field-label">Departments you have added</span>
+        <ul id="customDeptList"></ul>
       </div>
     </div>
   </div>

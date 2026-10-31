@@ -14,6 +14,8 @@
     path: 'data/entries.json',
     // The access key is shared through this file so every device connects by itself
     sharedPath: 'data/app-config.json',
+    // Departments added from inside the app (shared with every device)
+    deptPath: 'data/departments.json',
   };
   const SYNC_EVERY_MS = 30000;
   const CURRENCIES = {
@@ -31,6 +33,7 @@
     'HR',
     'Mannat Niyaz',
     'Amil Saheb Office',
+    'Visa',
   ];
   const DEPT_COLORS = {
     'Mawaid':                     ['#d97706', '#fef3c7', '#92400e'],
@@ -41,13 +44,28 @@
     'HR':                         ['#db2777', '#fce7f3', '#9d174d'],
     'Mannat Niyaz':               ['#b45309', '#ffedd5', '#7c2d12'],
     'Amil Saheb Office':          ['#475569', '#e2e8f0', '#1e293b'],
+    'Visa':                       ['#0f766e', '#ccfbf1', '#134e4a'],
   };
+  // Colours for departments added in the app, picked from the name
+  const EXTRA_COLORS = [
+    ['#be123c', '#ffe4e6', '#881337'], ['#4f46e5', '#e0e7ff', '#3730a3'], ['#65a30d', '#ecfccb', '#3f6212'],
+    ['#c2410c', '#ffedd5', '#7c2d12'], ['#0369a1', '#e0f2fe', '#0c4a6e'], ['#a21caf', '#fae8ff', '#701a75'],
+    ['#4d7c0f', '#f7fee7', '#365314'], ['#9f1239', '#fff1f2', '#881337'],
+  ];
+  function deptColors(name) {
+    if (DEPT_COLORS[name]) return DEPT_COLORS[name];
+    let h = 0;
+    for (const ch of String(name)) h = (h * 31 + ch.charCodeAt(0)) >>> 0;
+    return EXTRA_COLORS[h % EXTRA_COLORS.length];
+  }
   const KEY = {
     token: 'cashbook.token',
     tokenMeta: 'cashbook.tokenMeta',
     entries: 'cashbook.entries',
     pending: 'cashbook.pending',
     draft: 'cashbook.draft',
+    depts: 'cashbook.depts',
+    deptPending: 'cashbook.deptPending',
   };
 
   // ---------- Small helpers ----------
@@ -79,6 +97,8 @@
     },
     entries: store.get(KEY.entries, []),
     pending: store.get(KEY.pending, []),
+    depts: store.get(KEY.depts, []),             // departments added in the app: { id, name, createdAt, updatedAt, removed? }
+    deptPending: store.get(KEY.deptPending, []),
     token: store.get(KEY.token, ''),
     tokenMeta: store.get(KEY.tokenMeta, null), // { source: 'manual' | 'shared', setAt }
     checkedShared: false,
@@ -97,13 +117,15 @@
   const persist = () => {
     store.set(KEY.entries, state.entries);
     store.set(KEY.pending, state.pending);
+    store.set(KEY.depts, state.depts);
+    store.set(KEY.deptPending, state.deptPending);
   };
 
   // ============================================================
   //  GitHub storage
   // ============================================================
   const API = `https://api.github.com/repos/${CONFIG.owner}/${CONFIG.repo}`;
-  const RAW = `https://raw.githubusercontent.com/${CONFIG.owner}/${CONFIG.repo}/${CONFIG.branch}/${CONFIG.path}`;
+  const RAW_BASE = `https://raw.githubusercontent.com/${CONFIG.owner}/${CONFIG.repo}/${CONFIG.branch}`;
 
   function b64ToText(b64) {
     const bin = atob(b64.replace(/\s/g, ''));
@@ -127,15 +149,15 @@
     try { const v = JSON.parse(text || '[]'); return Array.isArray(v) ? v : []; } catch { return []; }
   }
 
-  async function readRemote() {
+  async function readRemote(path = CONFIG.path) {
     if (!state.token) {
       // Public read, no key needed
-      const r = await fetch(`${RAW}?t=${Date.now()}`, { cache: 'no-store' });
+      const r = await fetch(`${RAW_BASE}/${path}?t=${Date.now()}`, { cache: 'no-store' });
       if (r.status === 404) return { entries: [], sha: null };
       if (!r.ok) throw httpError(r);
       return { entries: parseList(await r.text()), sha: null };
     }
-    const r = await fetch(`${API}/contents/${CONFIG.path}?ref=${CONFIG.branch}&t=${Date.now()}`, { headers: ghHeaders(), cache: 'no-store' });
+    const r = await fetch(`${API}/contents/${path}?ref=${CONFIG.branch}&t=${Date.now()}`, { headers: ghHeaders(), cache: 'no-store' });
     if (r.status === 404) return { entries: [], sha: null };
     if (!r.ok) throw httpError(r);
     const meta = await r.json();
@@ -151,14 +173,14 @@
     return { entries: parseList(text), sha: meta.sha };
   }
 
-  async function writeRemote(entries, sha, message) {
+  async function writeRemote(path, entries, sha, message) {
     const body = {
       message,
       content: textToB64(JSON.stringify(entries, null, 2) + '\n'),
       branch: CONFIG.branch,
     };
     if (sha) body.sha = sha;
-    const r = await fetch(`${API}/contents/${CONFIG.path}`, {
+    const r = await fetch(`${API}/contents/${path}`, {
       method: 'PUT',
       headers: { ...ghHeaders(), 'Content-Type': 'application/json' },
       body: JSON.stringify(body),
@@ -279,30 +301,19 @@
     state.syncing = true;
     setSyncState('syncing');
     try {
-      let done = false;
-      for (let attempt = 0; attempt < 4 && !done; attempt++) {
-        const remote = await readRemote();
-        const sending = state.pending.slice();
-        const merged = merge(remote.entries, sending);
-
-        if (sending.length && state.token) {
-          try {
-            await writeRemote(merged, remote.sha, commitMessage(sending));
-          } catch (err) {
-            // Someone else saved at the same moment: re-read and try again
-            if (err.status === 409 || err.status === 422) { await wait(600 + attempt * 700); continue; }
-            throw err;
-          }
-          const sentIds = new Set(sending.map((p) => p.id + '|' + p.updatedAt));
-          state.pending = state.pending.filter((p) => !sentIds.has(p.id + '|' + p.updatedAt));
-        }
-        state.entries = merge(merged, state.pending);
-        done = true;
-      }
+      // Entries
+      const e = await syncList(CONFIG.path, () => state.pending, commitMessage);
+      state.pending = withoutSent(state.pending, e.sent);
+      state.entries = merge(e.merged, state.pending);
+      // Departments added in the app
+      const d = await syncList(CONFIG.deptPath, () => state.deptPending, deptCommitMessage);
+      state.deptPending = withoutSent(state.deptPending, d.sent);
+      state.depts = merge(d.merged, state.deptPending);
       persist();
+      renderDeptOptions();
       state.lastSync = new Date();
       state.lastError = '';
-      setSyncState(!state.token ? 'local' : state.pending.length ? 'offline' : 'synced');
+      setSyncState(!state.token ? 'local' : state.pending.length || state.deptPending.length ? 'offline' : 'synced');
       if (!quiet) toast(state.pending.length ? 'Saved on this device' : 'Everything is up to date');
     } catch (err) {
       state.lastError = err.message;
@@ -324,6 +335,33 @@
     }
   }
   const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+
+  // Read a list file from the repo, add our unsent changes, and write it back.
+  async function syncList(path, getPending, message) {
+    for (let attempt = 0; attempt < 4; attempt++) {
+      const remote = await readRemote(path);
+      const sending = getPending().slice();
+      const merged = merge(remote.entries, sending);
+      if (!sending.length || !state.token) return { merged, sent: [] };
+      try {
+        await writeRemote(path, merged, remote.sha, message(sending));
+        return { merged, sent: sending };
+      } catch (err) {
+        // Someone else saved at the same moment: re-read and try again
+        if (err.status === 409 || err.status === 422) { await wait(600 + attempt * 700); continue; }
+        throw err;
+      }
+    }
+    throw new Error('Busy — will retry');
+  }
+  function withoutSent(pending, sent) {
+    const ids = new Set(sent.map((p) => p.id + '|' + p.updatedAt));
+    return pending.filter((p) => !ids.has(p.id + '|' + p.updatedAt));
+  }
+  function deptCommitMessage(items) {
+    if (items.length === 1) return `${items[0].removed ? 'Remove' : 'Add'} department: ${items[0].name}`;
+    return `Update ${items.length} departments`;
+  }
 
   // ============================================================
   //  Sync indicator
@@ -461,10 +499,114 @@
   const deptSelect = $('#deptSelect');
   const dateInput = $('#dateInput');
 
-  function fillDepartments() {
-    deptSelect.insertAdjacentHTML('beforeend', DEPARTMENTS.map((d) => `<option value="${esc(d)}">${esc(d)}</option>`).join(''));
-    $('#fDept').insertAdjacentHTML('beforeend', DEPARTMENTS.map((d) => `<option value="${esc(d)}">${esc(d)}</option>`).join(''));
+  // ---------- Departments ----------
+  const ADD_DEPT = '__add__';
+  const deptKey = (name) => name.trim().replace(/\s+/g, ' ').toLowerCase();
+  const customDepts = () => state.depts.filter((d) => !d.removed && !DEPARTMENTS.some((b) => deptKey(b) === d.id));
+  const allDepts = () => [...DEPARTMENTS, ...customDepts().map((d) => d.name)];
+
+  function renderDeptOptions() {
+    const opt = (d) => `<option value="${esc(d)}">${esc(d)}</option>`;
+    const list = allDepts();
+    // Main form
+    const cur = deptSelect.value;
+    deptSelect.innerHTML = `<option value="" disabled>Choose a department…</option>${list.map(opt).join('')}<option value="${ADD_DEPT}">＋ Add a new department…</option>`;
+    if (cur && cur !== ADD_DEPT && !list.includes(cur)) deptSelect.insertAdjacentHTML('beforeend', opt(cur));
+    deptSelect.value = cur && cur !== ADD_DEPT ? cur : '';
+    deptSelect.classList.toggle('empty', !deptSelect.value);
+    // History filter: also include departments found in old entries
+    const f = $('#fDept');
+    const fcur = f.value;
+    const seen = new Set(list);
+    const extra = [...new Set(activeEntries().map((e) => e.department))].filter((d) => d && !seen.has(d)).sort();
+    f.innerHTML = `<option value="">All departments</option>${[...list, ...extra].map(opt).join('')}`;
+    f.value = [...list, ...extra].includes(fcur) ? fcur : '';
+    renderDeptManager();
   }
+
+  let deptBefore = '';
+  deptSelect.addEventListener('focus', () => { deptBefore = deptSelect.value === ADD_DEPT ? '' : deptSelect.value; });
+  deptSelect.addEventListener('change', () => {
+    if (deptSelect.value !== ADD_DEPT) { deptBefore = deptSelect.value; return; }
+    deptSelect.value = deptBefore;
+    deptSelect.classList.toggle('empty', !deptSelect.value);
+    renderSummary(); saveDraft();
+    openDeptDialog();
+  });
+
+  function openDeptDialog() {
+    $('#deptName').value = '';
+    $('#deptField2').classList.remove('invalid');
+    renderDeptManager();
+    $('#deptOverlay').hidden = false;
+    setTimeout(() => $('#deptName').focus(), 50);
+  }
+  function closeDeptDialog() { $('#deptOverlay').hidden = true; }
+  $('#deptOverlay').addEventListener('click', (e) => {
+    if (e.target.id === 'deptOverlay' || e.target.closest('[data-close]')) closeDeptDialog();
+  });
+  $('#openDeptManager').addEventListener('click', openDeptDialog);
+
+  function addDepartment() {
+    const name = $('#deptName').value.trim().replace(/\s+/g, ' ');
+    const field = $('#deptField2');
+    if (!name) { field.classList.add('invalid'); field.querySelector('.field-error').textContent = 'Please type the department name'; return; }
+    const existing = allDepts().find((d) => deptKey(d) === deptKey(name));
+    if (existing) {
+      deptSelect.value = existing;
+      deptSelect.classList.remove('empty');
+      $('#deptField').classList.remove('invalid');
+      closeDeptDialog();
+      toast(`"${existing}" is already in the list — selected it for you`);
+      renderSummary(); saveDraft();
+      return;
+    }
+    const now = new Date().toISOString();
+    const dep = { id: deptKey(name), name, createdAt: now, updatedAt: now };
+    state.depts = merge(state.depts, [dep]);
+    state.deptPending.push(dep);
+    persist();
+    renderDeptOptions();
+    deptSelect.value = name;
+    deptSelect.classList.remove('empty');
+    $('#deptField').classList.remove('invalid');
+    closeDeptDialog();
+    renderSummary(); saveDraft();
+    toast(`"${name}" added — it now shows on every device`);
+    sync();
+  }
+  $('#deptAddBtn').addEventListener('click', addDepartment);
+  $('#deptName').addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); addDepartment(); } });
+  $('#deptName').addEventListener('input', () => $('#deptField2').classList.remove('invalid'));
+
+  function renderDeptManager() {
+    const box = $('#customDeptList');
+    if (!box) return;
+    const list = customDepts();
+    $('#customDeptWrap').hidden = !list.length;
+    box.innerHTML = list.map((d) => {
+      const [c, bg, fg] = deptColors(d.name);
+      return `<li><span class="dept-pill" style="--pill-bg:${bg};--pill-fg:${fg}">${esc(d.name)}</span>
+        <button class="link-del" type="button" data-remove-dept="${esc(d.id)}">Remove</button></li>`;
+    }).join('');
+  }
+  $('#customDeptList').addEventListener('click', (e) => {
+    const b = e.target.closest('[data-remove-dept]');
+    if (!b) return;
+    const dep = state.depts.find((d) => d.id === b.dataset.removeDept);
+    if (!dep) return;
+    closeDeptDialog();
+    confirmBox(`Remove "${dep.name}"?`, 'It will no longer be offered in the list on any device. Entries already saved under it are kept.', 'Remove', () => {
+      const tomb = { ...dep, removed: true, updatedAt: new Date().toISOString() };
+      state.depts = merge(state.depts, [tomb]);
+      state.deptPending.push(tomb);
+      if (deptSelect.value === dep.name) deptSelect.value = '';
+      persist();
+      renderDeptOptions();
+      toast(`"${dep.name}" removed`);
+      sync();
+    });
+  });
 
   function updateDateHint() {
     const v = dateInput.value;
@@ -501,7 +643,7 @@
     }
     if (CURRENCIES[d.currency]) state.currency = d.currency;
     nameInput.value = d.name || '';
-    if (d.dept && DEPARTMENTS.includes(d.dept)) deptSelect.value = d.dept;
+    if (d.dept && allDepts().includes(d.dept)) deptSelect.value = d.dept;
   }
 
   function resetForm() {
@@ -676,7 +818,7 @@
   }
 
   function entryCard(e, isPending) {
-    const [av, pbg, pfg] = DEPT_COLORS[e.department] || ['#12614a', '#e5f2ec', '#12614a'];
+    const [av, pbg, pfg] = deptColors(e.department);
     const cur = curOf(e);
     const sym = cur === 'USD' ? '$' : '';
     const d0 = parseDate(e.date);
@@ -921,7 +1063,7 @@
   function init() {
     $('#todayLabel').textContent = prettyDate(isoDate());
     $('#repoNameLabel').textContent = CONFIG.repo;
-    fillDepartments();
+    renderDeptOptions();
     loadDraft();
     setCurrency(state.currency, { animate: false });
     deptSelect.classList.toggle('empty', !deptSelect.value);
