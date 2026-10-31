@@ -1,0 +1,278 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>Cash Book</title>
+  <meta name="description" content="Count cash by denomination, record who received it, and keep a searchable history.">
+  <meta name="theme-color" content="#0b3d2e">
+  <link rel="icon" href="assets/icon.svg" type="image/svg+xml">
+  <link rel="apple-touch-icon" href="assets/icon.svg">
+  <link rel="manifest" href="manifest.webmanifest">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <div class="bg-glow" aria-hidden="true"></div>
+
+  <header class="topbar">
+    <div class="brand">
+      <div class="logo" aria-hidden="true">
+        <svg viewBox="0 0 32 32"><rect x="3" y="8" width="26" height="16" rx="4" fill="none" stroke="currentColor" stroke-width="2.2"/><circle cx="16" cy="16" r="3.6" fill="none" stroke="currentColor" stroke-width="2.2"/><path d="M8 12.5v7M24 12.5v7" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"/></svg>
+      </div>
+      <div class="brand-text">
+        <h1>Cash Book</h1>
+        <p id="todayLabel">&nbsp;</p>
+      </div>
+    </div>
+    <button id="syncPill" class="sync-pill" data-state="idle" type="button" title="Connection & sync">
+      <span class="dot"></span><span class="sync-text">Starting…</span>
+    </button>
+  </header>
+
+  <nav class="tabs" role="tablist" aria-label="Screens">
+    <div class="tabs-inner" data-active="calc">
+      <span class="tab-slider" aria-hidden="true"></span>
+      <button class="tab active" role="tab" data-tab="calc" aria-selected="true" type="button">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"/></svg>
+        New Entry
+      </button>
+      <button class="tab" role="tab" data-tab="history" aria-selected="false" type="button">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="8.5" fill="none" stroke="currentColor" stroke-width="2.2"/><path d="M12 7.5V12l3 2" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+        History
+        <span class="tab-badge" id="historyBadge" hidden>0</span>
+      </button>
+    </div>
+  </nav>
+
+  <main>
+    <!-- ===================== NEW ENTRY ===================== -->
+    <section id="view-calc" class="view active" role="tabpanel">
+      <div id="connectBanner" class="banner" hidden>
+        <div class="banner-icon">!</div>
+        <div class="banner-text">
+          <strong>This device is not connected yet.</strong>
+          <span>Your entries are kept safely on this device and will upload automatically once it's connected.</span>
+        </div>
+        <button class="btn btn-small btn-ghost" data-open="settings" type="button">Connect</button>
+      </div>
+
+      <div class="calc-layout">
+        <div class="card calc-card" id="calcCard">
+          <div class="card-title">
+            <span class="step-num">1</span>
+            <div>
+              <h2>Count the notes</h2>
+              <p>Tap <b>+</b> / <b>−</b> or type how many of each note</p>
+            </div>
+          </div>
+
+          <div class="calc-head" aria-hidden="true">
+            <span>Note</span><span>How many</span><span>Amount</span>
+          </div>
+          <div id="rows" class="rows"></div>
+
+          <div class="calc-total">
+            <div class="total-meta">
+              <span id="notesCount">0 notes</span>
+              <button id="clearCounts" class="link-btn" type="button">Clear counts</button>
+            </div>
+            <div class="total-block">
+              <span class="total-label">Total</span>
+              <div class="total-amount"><small>IQD</small><strong id="grandTotal">0</strong></div>
+            </div>
+          </div>
+        </div>
+
+        <div class="side-col">
+          <div class="card details-card">
+            <div class="card-title">
+              <span class="step-num">2</span>
+              <div>
+                <h2>Who received it?</h2>
+                <p>Fill in the details below</p>
+              </div>
+            </div>
+
+            <label class="field" id="nameField">
+              <span class="field-label">Name of person</span>
+              <input id="nameInput" type="text" autocomplete="off" list="nameList" placeholder="e.g. Mulla Hussain" maxlength="80">
+              <datalist id="nameList"></datalist>
+              <span class="field-error">Please write who received the cash</span>
+            </label>
+
+            <label class="field" id="deptField">
+              <span class="field-label">Department</span>
+              <div class="select-wrap">
+                <select id="deptSelect">
+                  <option value="" disabled selected>Choose a department…</option>
+                </select>
+                <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 9l6 6 6-6" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/></svg>
+              </div>
+              <span class="field-error">Please choose a department</span>
+            </label>
+
+            <label class="field">
+              <span class="field-label">Date <em id="dateHint">(today)</em></span>
+              <input id="dateInput" type="date">
+            </label>
+          </div>
+
+          <div class="card summary-card">
+            <div class="card-title">
+              <span class="step-num">3</span>
+              <div>
+                <h2>Check &amp; save</h2>
+                <p id="summaryLine">Enter notes and details above</p>
+              </div>
+            </div>
+            <button id="saveBtn" class="btn btn-primary btn-big" type="button">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12.5l4.5 4.5L19 7.5" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"/></svg>
+              Save Entry
+            </button>
+            <button id="resetAll" class="btn btn-ghost btn-block" type="button">Start over</button>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ===================== HISTORY ===================== -->
+    <section id="view-history" class="view" role="tabpanel" hidden>
+      <div class="stats">
+        <div class="stat stat-main">
+          <span class="stat-label">Total shown</span>
+          <span class="stat-value"><small>IQD</small> <b id="statTotal">0</b></span>
+        </div>
+        <div class="stat">
+          <span class="stat-label">Entries</span>
+          <span class="stat-value"><b id="statCount">0</b></span>
+        </div>
+      </div>
+
+      <div class="card filters-card">
+        <div class="filters-top">
+          <div class="search">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="6.5" fill="none" stroke="currentColor" stroke-width="2.2"/><path d="M16 16l4 4" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"/></svg>
+            <input id="fName" type="search" placeholder="Search name" autocomplete="off">
+          </div>
+          <button id="toggleFilters" class="btn btn-ghost btn-small" type="button" aria-expanded="false">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 6h16M7 12h10M10 18h4" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"/></svg>
+            Filters <span class="filter-count" id="filterCount" hidden>0</span>
+          </button>
+        </div>
+
+        <div class="chips" id="quickDates">
+          <button class="chip active" data-range="all" type="button">All time</button>
+          <button class="chip" data-range="today" type="button">Today</button>
+          <button class="chip" data-range="week" type="button">Last 7 days</button>
+          <button class="chip" data-range="month" type="button">This month</button>
+        </div>
+
+        <div class="filters-more" id="filtersMore">
+          <div class="filters-more-inner">
+          <div class="filters-grid">
+            <label class="field">
+              <span class="field-label">Department</span>
+              <div class="select-wrap">
+                <select id="fDept"><option value="">All departments</option></select>
+                <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 9l6 6 6-6" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/></svg>
+              </div>
+            </label>
+            <label class="field">
+              <span class="field-label">From date</span>
+              <input id="fFrom" type="date">
+            </label>
+            <label class="field">
+              <span class="field-label">To date</span>
+              <input id="fTo" type="date">
+            </label>
+            <label class="field">
+              <span class="field-label">Amount more than</span>
+              <input id="fMin" type="text" inputmode="numeric" placeholder="e.g. 100,000" class="money-input">
+            </label>
+            <label class="field">
+              <span class="field-label">Amount less than</span>
+              <input id="fMax" type="text" inputmode="numeric" placeholder="e.g. 5,000,000" class="money-input">
+            </label>
+          </div>
+          <div class="filters-actions">
+            <button id="clearFilters" class="btn btn-ghost btn-small" type="button">Clear all filters</button>
+            <button id="exportCsv" class="btn btn-soft btn-small" type="button">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 4v11m0 0l-4.5-4.5M12 15l4.5-4.5M5 19h14" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+              Download for Excel
+            </button>
+          </div>
+          </div>
+        </div>
+      </div>
+
+      <div id="historyList" class="history-list"></div>
+    </section>
+  </main>
+
+  <!-- Success overlay -->
+  <div id="successOverlay" class="overlay success" hidden>
+    <div class="success-box">
+      <div class="check-circle">
+        <svg viewBox="0 0 52 52" aria-hidden="true"><circle cx="26" cy="26" r="24" fill="none"/><path d="M14 27l8 8 16-17" fill="none"/></svg>
+      </div>
+      <h3>Saved!</h3>
+      <p class="success-amount"><small>IQD</small> <b id="successAmount">0</b></p>
+      <p class="success-who" id="successWho"></p>
+      <button class="btn btn-primary" id="successClose" type="button">New entry</button>
+    </div>
+  </div>
+
+  <!-- Confirm dialog -->
+  <div id="confirmOverlay" class="overlay" hidden>
+    <div class="dialog" role="dialog" aria-modal="true" aria-labelledby="confirmTitle">
+      <h3 id="confirmTitle">Delete this entry?</h3>
+      <p id="confirmText">This will remove it from the history for everyone.</p>
+      <div class="dialog-actions">
+        <button class="btn btn-ghost" id="confirmNo" type="button">Keep it</button>
+        <button class="btn btn-danger" id="confirmYes" type="button">Delete</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Settings / connection -->
+  <div id="settingsOverlay" class="overlay" hidden>
+    <div class="dialog settings" role="dialog" aria-modal="true" aria-labelledby="settingsTitle">
+      <button class="close-x" data-close type="button" aria-label="Close">×</button>
+      <h3 id="settingsTitle">Connection</h3>
+      <div id="connStatus" class="conn-status"></div>
+
+      <div id="connectedBox" hidden>
+        <p class="muted">Entries are saved to the <b>data</b> folder of the GitHub project and checked for updates every 30 seconds.</p>
+        <div class="dialog-actions wrap">
+          <button class="btn btn-soft" id="syncNow" type="button">Sync now</button>
+          <button class="btn btn-soft" id="copyLink" type="button">Copy setup link for another phone</button>
+          <button class="btn btn-ghost danger-text" id="disconnect" type="button">Disconnect this device</button>
+        </div>
+      </div>
+
+      <div id="connectBox">
+        <p class="muted">A one-time setup, usually done by whoever manages the app. After this, the app uploads everything by itself.</p>
+        <ol class="howto">
+          <li>Open <a id="tokenLink" href="https://github.com/settings/personal-access-tokens/new" target="_blank" rel="noopener">GitHub → New access key</a> (signed in as the project owner).</li>
+          <li>Under <b>Repository access</b> choose <b>Only select repositories</b> → <b id="repoNameLabel">this project</b>.</li>
+          <li>Under <b>Permissions → Contents</b> choose <b>Read and write</b>.</li>
+          <li>Press <b>Generate</b>, copy the key and paste it below.</li>
+        </ol>
+        <label class="field">
+          <span class="field-label">Access key</span>
+          <input id="tokenInput" type="password" placeholder="github_pat_…" autocomplete="off" spellcheck="false">
+        </label>
+        <button class="btn btn-primary btn-block" id="connectBtn" type="button">Connect</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="toast" class="toast" role="status" aria-live="polite"></div>
+
+  <script src="app.js"></script>
+</body>
+</html>

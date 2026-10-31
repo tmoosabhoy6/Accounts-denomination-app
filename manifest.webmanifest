@@ -1,0 +1,9 @@
+{
+  "name": "Cash Book",
+  "short_name": "Cash Book",
+  "start_url": "./",
+  "display": "standalone",
+  "background_color": "#f5f2ea",
+  "theme_color": "#0b3d2e",
+  "icons": [{ "src": "assets/icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any" }]
+}
