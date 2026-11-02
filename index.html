@@ -28,7 +28,7 @@
         <p id="todayLabel">&nbsp;</p>
       </div>
     </div>
-    <button id="syncPill" class="sync-pill" data-state="idle" type="button" title="Connection & sync">
+    <button id="syncPill" class="sync-pill" data-state="idle" type="button" title="Save folder">
       <span class="dot"></span><span class="sync-text">Starting…</span>
     </button>
   </header>
@@ -49,16 +49,16 @@
   </nav>
 
   <main>
+    <div id="folderBanner" class="banner" hidden>
+      <div class="banner-icon">!</div>
+      <div class="banner-text">
+        <strong id="bannerTitle"></strong>
+        <span id="bannerText"></span>
+      </div>
+      <button class="btn btn-small btn-primary" id="bannerBtn" type="button"></button>
+    </div>
     <!-- ===================== NEW ENTRY ===================== -->
     <section id="view-calc" class="view active" role="tabpanel">
-      <div id="connectBanner" class="banner" hidden>
-        <div class="banner-icon">!</div>
-        <div class="banner-text">
-          <strong>This device is not connected yet.</strong>
-          <span>Your entries are kept safely on this device. Once the access key is entered on any one device, every device connects by itself.</span>
-        </div>
-        <button class="btn btn-small btn-ghost" data-open="settings" type="button">Connect</button>
-      </div>
 
       <div class="calc-layout">
         <div class="card calc-card" id="calcCard">
@@ -273,34 +273,22 @@
     </div>
   </div>
 
-  <!-- Settings / connection -->
+  <!-- Save folder -->
   <div id="settingsOverlay" class="overlay" hidden>
     <div class="dialog settings" role="dialog" aria-modal="true" aria-labelledby="settingsTitle">
       <button class="close-x" data-close type="button" aria-label="Close">×</button>
-      <h3 id="settingsTitle">Connection</h3>
+      <h3 id="settingsTitle">Save folder</h3>
       <div id="connStatus" class="conn-status"></div>
-
-      <div id="connectedBox" hidden>
-        <p class="muted">Every phone and computer that opens this app connects by itself — nothing to enter. Entries are saved to the <b>data</b> folder of the GitHub project and checked for updates every 30 seconds.</p>
-        <div class="dialog-actions wrap">
-          <button class="btn btn-soft" id="syncNow" type="button">Sync now</button>
-          <button class="btn btn-ghost" id="replaceKey" type="button">Replace the access key (e.g. when it expires)</button>
-        </div>
+      <p class="muted" id="folderHelp">Every day is saved into its own folder, for example:<br>
+        <code class="path-eg" id="pathExample"></code></p>
+      <div class="dialog-actions wrap">
+        <button class="btn btn-primary" id="saveNow" type="button">Save to folder now</button>
+        <button class="btn btn-soft" id="chooseFolder" type="button">Choose save folder</button>
       </div>
-
-      <div id="connectBox" class="connect-box">
-        <p class="muted">Do this once, on any one device. Every other phone and computer will then connect by itself.</p>
-        <ol class="howto">
-          <li>Open <a id="tokenLink" href="https://github.com/settings/personal-access-tokens/new" target="_blank" rel="noopener">GitHub → New access key</a> (signed in as the project owner).</li>
-          <li>Under <b>Repository access</b> choose <b>Only select repositories</b> → <b id="repoNameLabel">this project</b>.</li>
-          <li>Under <b>Permissions → Contents</b> choose <b>Read and write</b>.</li>
-          <li>Press <b>Generate</b>, copy the key and paste it below.</li>
-        </ol>
-        <label class="field">
-          <span class="field-label">Access key</span>
-          <input id="tokenInput" type="password" placeholder="github_pat_…" autocomplete="off" spellcheck="false">
-        </label>
-        <button class="btn btn-primary btn-block" id="connectBtn" type="button">Connect</button>
+      <div class="import-box" id="importBox">
+        <span class="field-label">Records from the old online app</span>
+        <p class="muted">Copies every entry saved in the old online version into the folder, sorted by date. Safe to press more than once.</p>
+        <button class="btn btn-ghost btn-block" id="importOld" type="button">Import old records</button>
       </div>
     </div>
   </div>

@@ -3,9 +3,6 @@ name: Deploy to GitHub Pages
 on:
   push:
     branches: [main]
-    # Saving entries only changes data/ — no need to redeploy the site for that
-    paths-ignore:
-      - 'data/**'
   workflow_dispatch:
 
 permissions:
@@ -19,6 +16,9 @@ concurrency:
 
 jobs:
   deploy:
+    # Only runs in the original project. A copy is published with
+    # Settings → Pages → "Deploy from a branch" instead.
+    if: github.repository == 'tmoosabhoy6/Accounts-denomination-app'
     runs-on: ubuntu-latest
     environment:
       name: github-pages

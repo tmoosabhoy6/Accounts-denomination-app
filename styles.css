@@ -548,3 +548,15 @@ main { max-width: 1120px; margin: 0 auto; padding: 6px 16px 48px; }
 .custom-depts li { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
 .custom-depts .dept-pill { font-size: 13.5px; padding: 5px 12px; }
 .link-del { border: 0; background: none; padding: 6px 4px; color: var(--danger); font-size: 13.5px; font-weight: 700; }
+
+/* ---------------- Local folder ---------------- */
+main > .banner { margin-bottom: 16px; }
+.banner .btn-primary { height: 42px; }
+.path-eg { display: block; margin-top: 8px; padding: 10px 12px; border-radius: 10px; background: var(--surface-2); border: 1px solid var(--line); font-size: 13px; color: var(--ink); word-break: break-all; }
+.import-box { margin-top: 20px; padding-top: 16px; border-top: 1px dashed var(--line); display: grid; gap: 6px; }
+.import-box .muted { margin: 0; }
+.sync-pill[data-state="unsaved"], .sync-pill[data-state="nofolder"], .sync-pill[data-state="reconnect"] { border-color: #f1d9ae; background: #fff8ea; }
+.sync-pill[data-state="unsaved"] .dot, .sync-pill[data-state="nofolder"] .dot, .sync-pill[data-state="reconnect"] .dot { background: var(--warn); }
+.sync-pill[data-state="saved"] .dot { background: #22a06b; }
+.sync-pill[data-state="saving"] .dot { background: var(--gold); animation: pulse 1s infinite; }
+.sync-pill[data-state="browser"] .dot { background: var(--ink-3); }

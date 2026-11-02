@@ -1,23 +1,14 @@
 /* ============================================================
    Cash Book — app logic
-   Uses the GitHub repository itself as the database:
-   every entry is written to data/entries.json on the main branch.
+   Entries are kept in this browser and saved into a folder on this
+   computer (one sub-folder per day). No online database.
    ============================================================ */
 (() => {
   'use strict';
 
   // ---------- Settings ----------
-  const CONFIG = {
-    owner: 'tmoosabhoy6',
-    repo: 'Accounts-denomination-app',
-    branch: 'main',
-    path: 'data/entries.json',
-    // The access key is shared through this file so every device connects by itself
-    sharedPath: 'data/app-config.json',
-    // Departments added from inside the app (shared with every device)
-    deptPath: 'data/departments.json',
-  };
-  const SYNC_EVERY_MS = 30000;
+  // Where the old online version kept its records (used once by "Import old records")
+  const OLD_RECORDS_URL = 'https://raw.githubusercontent.com/tmoosabhoy6/Accounts-denomination-app/72afa1e62cd7058d502123995c1987f868e66bbc/data/entries.json';
   const CURRENCIES = {
     IQD: [50000, 25000, 10000, 5000, 1000, 500, 250],
     USD: [100, 50, 20, 10, 5, 1],
@@ -59,14 +50,16 @@
     return EXTRA_COLORS[h % EXTRA_COLORS.length];
   }
   const KEY = {
-    token: 'cashbook.token',
-    tokenMeta: 'cashbook.tokenMeta',
-    entries: 'cashbook.entries',
-    pending: 'cashbook.pending',
+    entries: 'cashbook.local.entries',  // entries made in this browser (kept until safely in the folder)
+    unsaved: 'cashbook.local.unsaved',  // { id: updatedAt } not yet written to the folder
     draft: 'cashbook.draft',
     depts: 'cashbook.depts',
-    deptPending: 'cashbook.deptPending',
   };
+  // Left over from the old online version: keep any entries it had not uploaded yet
+  const OLD_PENDING = (() => { try { return JSON.parse(localStorage.getItem('cashbook.pending') || '[]'); } catch { return []; } })();
+  ['cashbook.token', 'cashbook.tokenMeta', 'cashbook.entries', 'cashbook.pending', 'cashbook.deptPending'].forEach((k) => {
+    try { localStorage.removeItem(k); } catch { /* ignore */ }
+  });
 
   // ---------- Small helpers ----------
   const $ = (s, r = document) => r.querySelector(s);
@@ -96,16 +89,11 @@
       USD: Object.fromEntries(CURRENCIES.USD.map((d) => [d, 0])),
     },
     entries: store.get(KEY.entries, []),
-    pending: store.get(KEY.pending, []),
+    unsaved: store.get(KEY.unsaved, {}),
+    folderEntries: [],                           // everything read back from the folder
     depts: store.get(KEY.depts, []),             // departments added in the app: { id, name, createdAt, updatedAt, removed? }
-    deptPending: store.get(KEY.deptPending, []),
-    token: store.get(KEY.token, ''),
-    tokenMeta: store.get(KEY.tokenMeta, null), // { source: 'manual' | 'shared', setAt }
-    checkedShared: false,
-    syncing: false,
-    syncState: 'idle',
-    lastSync: null,
-    lastError: '',
+    dir: null,                                   // the chosen folder
+    folderOk: false,                             // browser allows writing to it right now
     filters: { range: 'all' },
     openId: null,
   };
@@ -116,164 +104,32 @@
 
   const persist = () => {
     store.set(KEY.entries, state.entries);
-    store.set(KEY.pending, state.pending);
+    store.set(KEY.unsaved, state.unsaved);
     store.set(KEY.depts, state.depts);
-    store.set(KEY.deptPending, state.deptPending);
   };
+  if (Array.isArray(OLD_PENDING) && OLD_PENDING.length) {
+    state.entries = merge(state.entries, OLD_PENDING);
+    for (const e of OLD_PENDING) if (e && e.id) state.unsaved[e.id] = e.updatedAt;
+    persist();
+  }
+  // Forget "unsaved" marks for entries that are no longer kept here
+  for (const id of Object.keys(state.unsaved)) if (!state.entries.some((e) => e.id === id)) delete state.unsaved[id];
 
   // ============================================================
-  //  GitHub storage
+  //  Saving: browser cache + a folder on this computer
   // ============================================================
-  const API = `https://api.github.com/repos/${CONFIG.owner}/${CONFIG.repo}`;
-  const RAW_BASE = `https://raw.githubusercontent.com/${CONFIG.owner}/${CONFIG.repo}/${CONFIG.branch}`;
+  // Each entry is kept in this browser the moment it is saved, then written
+  // into the chosen folder, one sub-folder per day:
+  //   <folder>\2026\11 - November\2026-11-02\Cash Book 2026-11-02.csv          (opens in Excel)
+  //   <folder>\2026\11 - November\2026-11-02\Cash Book 2026-11-02 - data.json  (read back by History)
+  const FS_OK = typeof window.showDirectoryPicker === 'function';
+  const MONTHS = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
+  const dayParts = (date) => { const [y, m] = date.split('-'); return [y, `${m} - ${MONTHS[Number(m) - 1]}`, date]; };
+  const csvName = (date) => `Cash Book ${date}.csv`;
+  const dataName = (date) => `Cash Book ${date} - data.json`;
+  const DEPT_FILE = 'Cash Book departments.json';
 
-  function b64ToText(b64) {
-    const bin = atob(b64.replace(/\s/g, ''));
-    const bytes = Uint8Array.from(bin, (c) => c.charCodeAt(0));
-    return new TextDecoder().decode(bytes);
-  }
-  function textToB64(text) {
-    const bytes = new TextEncoder().encode(text);
-    let bin = '';
-    for (let i = 0; i < bytes.length; i += 0x8000) bin += String.fromCharCode.apply(null, bytes.subarray(i, i + 0x8000));
-    return btoa(bin);
-  }
-  function ghHeaders(token = state.token) {
-    return {
-      Accept: 'application/vnd.github+json',
-      Authorization: `Bearer ${token}`,
-      'X-GitHub-Api-Version': '2022-11-28',
-    };
-  }
-  function parseList(text) {
-    try { const v = JSON.parse(text || '[]'); return Array.isArray(v) ? v : []; } catch { return []; }
-  }
-
-  async function readRemote(path = CONFIG.path) {
-    if (!state.token) {
-      // Public read, no key needed
-      const r = await fetch(`${RAW_BASE}/${path}?t=${Date.now()}`, { cache: 'no-store' });
-      if (r.status === 404) return { entries: [], sha: null };
-      if (!r.ok) throw httpError(r);
-      return { entries: parseList(await r.text()), sha: null };
-    }
-    const r = await fetch(`${API}/contents/${path}?ref=${CONFIG.branch}&t=${Date.now()}`, { headers: ghHeaders(), cache: 'no-store' });
-    if (r.status === 404) return { entries: [], sha: null };
-    if (!r.ok) throw httpError(r);
-    const meta = await r.json();
-    let text;
-    if (meta.content && meta.encoding === 'base64') {
-      text = b64ToText(meta.content);
-    } else {
-      // Files over 1 MB: fetch the blob directly
-      const b = await fetch(`${API}/git/blobs/${meta.sha}`, { headers: ghHeaders(), cache: 'no-store' });
-      if (!b.ok) throw httpError(b);
-      text = b64ToText((await b.json()).content);
-    }
-    return { entries: parseList(text), sha: meta.sha };
-  }
-
-  async function writeRemote(path, entries, sha, message) {
-    const body = {
-      message,
-      content: textToB64(JSON.stringify(entries, null, 2) + '\n'),
-      branch: CONFIG.branch,
-    };
-    if (sha) body.sha = sha;
-    const r = await fetch(`${API}/contents/${path}`, {
-      method: 'PUT',
-      headers: { ...ghHeaders(), 'Content-Type': 'application/json' },
-      body: JSON.stringify(body),
-    });
-    if (!r.ok) throw httpError(r);
-    return r.json();
-  }
-
-  function httpError(r) {
-    const e = new Error(`HTTP ${r.status}`);
-    e.status = r.status;
-    return e;
-  }
-
-  // ---------- Shared access key ----------
-  // A key entered once on any device is saved (encoded) in data/app-config.json,
-  // and every other phone or computer picks it up from there automatically.
-  const SHARED_RAW = `https://raw.githubusercontent.com/${CONFIG.owner}/${CONFIG.repo}/${CONFIG.branch}/${CONFIG.sharedPath}`;
-  const encodeKey = (t) => 'v1.' + btoa(t.split('').reverse().join(''));
-  const decodeKey = (s) => {
-    try { return typeof s === 'string' && s.startsWith('v1.') ? atob(s.slice(3)).split('').reverse().join('') : ''; }
-    catch { return ''; }
-  };
-
-  function setToken(token, meta) {
-    state.token = token;
-    state.tokenMeta = meta;
-    store.set(KEY.token, token);
-    store.set(KEY.tokenMeta, meta);
-  }
-
-  async function readShared() {
-    try {
-      const r = await fetch(`${SHARED_RAW}?t=${Date.now()}`, { cache: 'no-store' });
-      if (!r.ok) return null;
-      const j = await r.json();
-      const token = decodeKey(j.key);
-      return token ? { token, setAt: Number(j.setAt) || 0 } : null;
-    } catch { return null; }
-  }
-
-  async function publishShared(token, setAt) {
-    let sha;
-    const g = await fetch(`${API}/contents/${CONFIG.sharedPath}?ref=${CONFIG.branch}&t=${Date.now()}`, { headers: ghHeaders(token), cache: 'no-store' });
-    if (g.ok) {
-      const meta = await g.json();
-      sha = meta.sha;
-      try {
-        const cur = JSON.parse(b64ToText(meta.content || ''));
-        if (decodeKey(cur.key) === token) return true;           // already shared
-        if ((Number(cur.setAt) || 0) > setAt) return false;      // a newer key is already shared
-      } catch { /* unreadable file: overwrite it */ }
-    } else if (g.status !== 404) {
-      throw httpError(g);
-    }
-    const body = {
-      message: 'Update the shared access key for Cash Book devices',
-      content: textToB64(JSON.stringify({
-        about: 'Managed by the Cash Book app so every device can save entries without entering a key.',
-        key: encodeKey(token),
-        setAt,
-      }, null, 2) + '\n'),
-      branch: CONFIG.branch,
-    };
-    if (sha) body.sha = sha;
-    const p = await fetch(`${API}/contents/${CONFIG.sharedPath}`, {
-      method: 'PUT',
-      headers: { ...ghHeaders(token), 'Content-Type': 'application/json' },
-      body: JSON.stringify(body),
-    });
-    if (!p.ok) throw httpError(p);
-    return true;
-  }
-
-  // Make sure this device has the newest shared key, or shares its own key if it has a newer one.
-  let lastSharedCheck = 0;
-  async function ensureSharedKey() {
-    lastSharedCheck = Date.now();
-    const shared = await readShared();
-    const meta = state.tokenMeta || (state.token ? { source: 'manual', setAt: 0 } : null);
-    try {
-      if (shared && (!state.token || meta.source === 'shared' || shared.setAt > (meta.setAt || 0))) {
-        if (shared.token !== state.token || meta.source !== 'shared') setToken(shared.token, { source: 'shared', setAt: shared.setAt });
-      } else if (state.token && meta.source === 'manual' && (!shared || shared.token !== state.token)) {
-        if (!meta.setAt) setToken(state.token, { source: 'manual', setAt: Date.now() });
-        await publishShared(state.token, state.tokenMeta.setAt);
-      }
-    } catch { /* try again next time */ }
-    state.checkedShared = true;
-    setSyncState(state.syncState);
-  }
-
-  // Combine two lists of entries; the most recently updated copy of each entry wins.
+  // Combine lists of entries; the most recently updated copy of each entry wins.
   function merge(...lists) {
     const map = new Map();
     for (const list of lists) {
@@ -286,103 +142,228 @@
     return [...map.values()].sort((a, b) => (a.createdAt || '').localeCompare(b.createdAt || ''));
   }
 
-  function commitMessage(items) {
-    if (items.length === 1) {
-      const e = items[0];
-      return e.deleted
-        ? `Delete entry: ${money(curOf(e), e.total)} - ${e.name} (${e.department})`
-        : `Add entry: ${money(curOf(e), e.total)} - ${e.name} (${e.department}) on ${e.date}`;
-    }
-    return `Sync ${items.length} entries from Cash Book`;
+  const allEntries = () => merge(state.folderEntries, state.entries);
+  const unsavedCount = () => Object.keys(state.unsaved).length;
+  const unsavedDates = () => [...new Set(state.entries.filter((e) => e.id in state.unsaved).map((e) => e.date))].sort();
+
+  // Keep an entry in the browser and remember it still has to go into the folder
+  function keepLocally(list) {
+    state.entries = merge(state.entries, list);
+    for (const e of list) state.unsaved[e.id] = e.updatedAt;
+    persist();
   }
 
-  async function sync({ quiet = true } = {}) {
-    if (state.syncing) return;
-    state.syncing = true;
-    setSyncState('syncing');
+  // Remembers the chosen folder between visits
+  function idb(mode, fn) {
+    return new Promise((resolve, reject) => {
+      const open = indexedDB.open('cashbook', 1);
+      open.onupgradeneeded = () => open.result.createObjectStore('handles');
+      open.onerror = () => reject(open.error);
+      open.onsuccess = () => {
+        const tx = open.result.transaction('handles', mode);
+        const req = fn(tx.objectStore('handles'));
+        tx.oncomplete = () => resolve(req && req.result);
+        tx.onerror = () => reject(tx.error);
+      };
+    });
+  }
+  const idbGet = (k) => idb('readonly', (s) => s.get(k)).catch(() => null);
+  const idbSet = (k, v) => idb('readwrite', (s) => s.put(v, k)).catch(() => {});
+
+  async function folderPermission(ask = false) {
+    if (!state.dir) return false;
     try {
-      // Entries
-      const e = await syncList(CONFIG.path, () => state.pending, commitMessage);
-      state.pending = withoutSent(state.pending, e.sent);
-      state.entries = merge(e.merged, state.pending);
-      // Departments added in the app
-      const d = await syncList(CONFIG.deptPath, () => state.deptPending, deptCommitMessage);
-      state.deptPending = withoutSent(state.deptPending, d.sent);
-      state.depts = merge(d.merged, state.deptPending);
-      persist();
-      renderDeptOptions();
-      state.lastSync = new Date();
-      state.lastError = '';
-      setSyncState(!state.token ? 'local' : state.pending.length || state.deptPending.length ? 'offline' : 'synced');
-      if (!quiet) toast(state.pending.length ? 'Saved on this device' : 'Everything is up to date');
+      const opts = { mode: 'readwrite' };
+      if ((await state.dir.queryPermission(opts)) === 'granted') return true;
+      if (ask && (await state.dir.requestPermission(opts)) === 'granted') return true;
+    } catch { /* folder moved or deleted */ }
+    return false;
+  }
+
+  async function chooseFolder() {
+    if (!FS_OK) { toast('Open this app in Chrome or Edge on a computer to save into a folder', 'warn'); return false; }
+    try {
+      const dir = await window.showDirectoryPicker({ id: 'cashbook', mode: 'readwrite', startIn: 'documents' });
+      state.dir = dir;
+      state.folderOk = true;
+      await idbSet('root', dir);
+      toast(`Saving into the "${dir.name}" folder`);
+      await loadFolder();
+      await saveDepartments();
+      await saveAll();
+      return true;
     } catch (err) {
-      state.lastError = err.message;
-      if (err.status === 401 || err.status === 403) {
-        setSyncState('error');
-        // The key may have been replaced on another device: pick up the new one
-        if (Date.now() - lastSharedCheck > 60000) {
-          const before = state.token;
-          ensureSharedKey().then(() => { if (state.token !== before) sync(); });
-        }
-        if (!quiet) toast('The access key is not working — enter a new one in Connection.', 'warn');
-      } else {
-        setSyncState(state.pending.length || !navigator.onLine ? 'offline' : 'error');
-      }
+      if (!err || err.name !== 'AbortError') toast('Could not use that folder. Please choose another one.', 'warn');
+      return false;
     } finally {
-      state.syncing = false;
-      renderHistory();
-      updateNameList();
+      updateStatus();
     }
   }
-  const wait = (ms) => new Promise((r) => setTimeout(r, ms));
 
-  // Read a list file from the repo, add our unsent changes, and write it back.
-  async function syncList(path, getPending, message) {
-    for (let attempt = 0; attempt < 4; attempt++) {
-      const remote = await readRemote(path);
-      const sending = getPending().slice();
-      const merged = merge(remote.entries, sending);
-      if (!sending.length || !state.token) return { merged, sent: [] };
-      try {
-        await writeRemote(path, merged, remote.sha, message(sending));
-        return { merged, sent: sending };
-      } catch (err) {
-        // Someone else saved at the same moment: re-read and try again
-        if (err.status === 409 || err.status === 422) { await wait(600 + attempt * 700); continue; }
-        throw err;
+  async function getDayDir(date, create) {
+    let d = state.dir;
+    for (const part of dayParts(date)) d = await d.getDirectoryHandle(part, { create });
+    return d;
+  }
+  async function readJson(dir, name) {
+    try { return JSON.parse(await (await (await dir.getFileHandle(name)).getFile()).text()); }
+    catch { return null; }
+  }
+  async function writeText(dir, name, text) {
+    const w = await (await dir.getFileHandle(name, { create: true })).createWritable();
+    await w.write(text);
+    await w.close();
+  }
+
+  // Read every saved day back from the folder (History shows these)
+  async function loadFolder() {
+    if (!state.folderOk) return;
+    const found = [];
+    try {
+      for await (const [y, yDir] of state.dir.entries()) {
+        if (yDir.kind !== 'directory' || !/^\d{4}$/.test(y)) continue;
+        for await (const [, mDir] of yDir.entries()) {
+          if (mDir.kind !== 'directory') continue;
+          for await (const [day, dDir] of mDir.entries()) {
+            if (dDir.kind !== 'directory' || !/^\d{4}-\d{2}-\d{2}$/.test(day)) continue;
+            const j = await readJson(dDir, dataName(day));
+            if (j && Array.isArray(j.entries)) found.push(...j.entries);
+          }
+        }
       }
-    }
-    throw new Error('Busy — will retry');
-  }
-  function withoutSent(pending, sent) {
-    const ids = new Set(sent.map((p) => p.id + '|' + p.updatedAt));
-    return pending.filter((p) => !ids.has(p.id + '|' + p.updatedAt));
-  }
-  function deptCommitMessage(items) {
-    if (items.length === 1) return `${items[0].removed ? 'Remove' : 'Add'} department: ${items[0].name}`;
-    return `Update ${items.length} departments`;
+      const deps = await readJson(state.dir, DEPT_FILE);
+      if (deps && Array.isArray(deps.departments)) state.depts = merge(state.depts, deps.departments);
+    } catch { /* folder not readable right now */ }
+    state.folderEntries = found;
+    persist();
+    renderDeptOptions();
+    renderHistory();
+    updateNameList();
   }
 
-  // ============================================================
-  //  Sync indicator
-  // ============================================================
-  function setSyncState(s) {
-    state.syncState = s;
+  // Write one day into its folder, merged with what is already there
+  async function saveDay(date) {
+    const dir = await getDayDir(date, true);
+    const existing = (await readJson(dir, dataName(date)) || {}).entries || [];
+    const merged = merge(existing, state.entries.filter((e) => e.date === date));
+    await writeText(dir, dataName(date), JSON.stringify({ date, savedAt: new Date().toISOString(), entries: merged }, null, 2) + '\n');
+    await writeText(dir, csvName(date), buildCsv(merged.filter((e) => !e.deleted)));
+    state.folderEntries = merge(state.folderEntries.filter((e) => e.date !== date), merged);
+  }
+
+  // Browsers without folder access (phones, Safari, Firefox): download the day's files instead
+  function downloadUnsaved() {
+    const dates = unsavedDates();
+    if (!dates.length) { toast('Everything is already saved'); return; }
+    for (const date of dates) {
+      downloadFile(csvName(date), buildCsv(state.entries.filter((e) => e.date === date && !e.deleted)), 'text/csv;charset=utf-8');
+      const ids = state.entries.filter((e) => e.date === date).map((e) => e.id);
+      ids.forEach((id) => delete state.unsaved[id]);
+    }
+    persist();
+    updateStatus();
+    renderHistory();
+    toast(`Downloaded ${dates.length} day${dates.length === 1 ? '' : 's'} into Downloads`);
+  }
+
+  let saving = null;
+  async function saveAll({ ask = false, quiet = true } = {}) {
+    if (saving) return saving;
+    saving = (async () => {
+      const dates = unsavedDates();
+      if (!dates.length) { if (!quiet) toast('Everything is already saved in the folder'); return true; }
+      if (!FS_OK || !state.dir) return false;
+      state.folderOk = await folderPermission(ask);
+      if (!state.folderOk) return false;
+      updateStatus('saving');
+      try {
+        for (const date of dates) {
+          // Only clear what was actually written (an entry added meanwhile stays unsaved)
+          const snap = state.entries.filter((e) => e.date === date && e.id in state.unsaved).map((e) => [e.id, e.updatedAt]);
+          await saveDay(date);
+          for (const [id, upd] of snap) if (state.unsaved[id] === upd) delete state.unsaved[id];
+        }
+        pruneCache();
+        persist();
+        if (!quiet) toast(`Saved into the "${state.dir.name}" folder`);
+        return true;
+      } catch {
+        state.folderOk = await folderPermission(false);
+        toast('Could not save into the folder. Check that it still exists, or choose it again.', 'warn');
+        return false;
+      }
+    })();
+    try { return await saving; } finally { saving = null; updateStatus(); renderHistory(); }
+  }
+
+  // Entries already in the folder don't need to stay in the browser for ever
+  function pruneCache() {
+    const cutoff = isoDate(new Date(Date.now() - 45 * 864e5));
+    state.entries = state.entries.filter((e) => e.id in state.unsaved || e.date >= cutoff);
+  }
+
+  async function saveDepartments() {
+    persist();
+    if (!FS_OK || !state.dir || !(await folderPermission(false))) return;
+    try { await writeText(state.dir, DEPT_FILE, JSON.stringify({ departments: state.depts }, null, 2) + '\n'); } catch { /* next time */ }
+  }
+
+  // ---------- Status pill + banner ----------
+  function currentStatus() {
+    const n = unsavedCount();
+    if (!FS_OK) return n ? 'unsaved' : 'browser';
+    if (!state.dir) return 'nofolder';
+    if (!state.folderOk) return 'reconnect';
+    return n ? 'unsaved' : 'saved';
+  }
+  function updateStatus(forced) {
+    const st = forced || currentStatus();
+    const n = unsavedCount();
     const pill = $('#syncPill');
-    pill.dataset.state = s;
-    const n = state.pending.length;
-    const text = {
-      idle: 'Starting…',
-      syncing: 'Syncing…',
-      synced: 'All saved',
-      local: n ? `${n} waiting to upload` : 'Not connected',
-      offline: n ? `${n} waiting · retrying` : 'Offline',
-      error: state.token ? 'Key not working' : 'Not connected',
-    }[s];
-    $('.sync-text', pill).textContent = text;
-    $('#connectBanner').hidden = !!state.token || !state.checkedShared;
+    pill.dataset.state = st;
+    $('.sync-text', pill).textContent = {
+      saving: 'Saving…',
+      saved: 'All saved to folder',
+      unsaved: `${n} not saved yet`,
+      nofolder: 'Choose save folder',
+      reconnect: 'Allow folder access',
+      browser: 'Saved in this browser',
+    }[st];
+
+    const banner = $('#folderBanner');
+    let b = null;
+    if (!FS_OK) {
+      if (n) b = ['This browser cannot save into folders', 'Use Chrome or Edge on the accounts computer. Here, the button downloads the day\'s Excel file instead.', 'Download files', 'download'];
+    } else if (!state.dir) {
+      b = ['Choose where to save', 'Pick a folder on this computer, for example Documents › Cash Book. Every day is saved into its own dated folder.', 'Choose folder', 'choose'];
+    } else if (!state.folderOk) {
+      b = [`Allow saving to the "${state.dir.name}" folder`, 'The browser asks for permission each time the app opens. Press the button, then choose Allow.', 'Allow', 'allow'];
+    } else if (n && st !== 'saving') {
+      b = [`${n} entr${n === 1 ? 'y is' : 'ies are'} not saved to the folder yet`, 'Press Save now to write them into the folder.', 'Save now', 'save'];
+    }
+    banner.hidden = !b;
+    if (b) {
+      $('#bannerTitle').textContent = b[0];
+      $('#bannerText').textContent = b[1];
+      $('#bannerBtn').textContent = b[2];
+      $('#bannerBtn').dataset.act = b[3];
+    }
     renderConnStatus();
   }
+
+  async function allowFolder() {
+    state.folderOk = await folderPermission(true);
+    updateStatus();
+    if (state.folderOk) { await loadFolder(); await saveDepartments(); await saveAll({ quiet: false }); }
+  }
+
+  $('#bannerBtn').addEventListener('click', async () => {
+    const act = $('#bannerBtn').dataset.act;
+    if (act === 'choose') await chooseFolder();
+    else if (act === 'allow') await allowFolder();
+    else if (act === 'save') await saveAll({ ask: true, quiet: false });
+    else if (act === 'download') downloadUnsaved();
+  });
 
   // ============================================================
   //  Calculator
@@ -564,16 +545,14 @@
     const now = new Date().toISOString();
     const dep = { id: deptKey(name), name, createdAt: now, updatedAt: now };
     state.depts = merge(state.depts, [dep]);
-    state.deptPending.push(dep);
-    persist();
+    saveDepartments();
     renderDeptOptions();
     deptSelect.value = name;
     deptSelect.classList.remove('empty');
     $('#deptField').classList.remove('invalid');
     closeDeptDialog();
     renderSummary(); saveDraft();
-    toast(`"${name}" added — it now shows on every device`);
-    sync();
+    toast(`"${name}" added to the list`);
   }
   $('#deptAddBtn').addEventListener('click', addDepartment);
   $('#deptName').addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); addDepartment(); } });
@@ -599,12 +578,10 @@
     confirmBox(`Remove "${dep.name}"?`, 'It will no longer be offered in the list on any device. Entries already saved under it are kept.', 'Remove', () => {
       const tomb = { ...dep, removed: true, updatedAt: new Date().toISOString() };
       state.depts = merge(state.depts, [tomb]);
-      state.deptPending.push(tomb);
       if (deptSelect.value === dep.name) deptSelect.value = '';
-      persist();
+      saveDepartments();
       renderDeptOptions();
       toast(`"${dep.name}" removed`);
-      sync();
     });
   });
 
@@ -699,14 +676,13 @@
       createdAt: now,
       updatedAt: now,
     };
-    state.entries = merge(state.entries, [entry]);
-    state.pending.push(entry);
-    persist();
+    keepLocally([entry]);
     showSuccess(entry);
     resetForm();
     renderHistory();
     updateNameList();
-    sync();
+    updateStatus();
+    saveAll({ ask: true });
   });
 
   function shake(el) {
@@ -735,8 +711,8 @@
   // ============================================================
   //  History
   // ============================================================
-  const activeEntries = () => state.entries.filter((e) => !e.deleted);
-  const pendingIds = () => new Set(state.pending.map((p) => p.id));
+  const activeEntries = () => allEntries().filter((e) => !e.deleted);
+  const pendingIds = () => new Set(Object.keys(state.unsaved));
 
   function readFilters() {
     return {
@@ -782,11 +758,12 @@
     badge.textContent = all.length > 999 ? '999+' : all.length;
 
     if (!list.length) {
+      const waiting = FS_OK && state.dir && !state.folderOk;
       listEl.innerHTML = `
         <div class="empty">
           <div class="empty-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16v10a2 2 0 01-2 2H6a2 2 0 01-2-2V7zm0 0l2-3h12l2 3M9 11h6" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg></div>
-          <h3>${all.length ? 'Nothing matches these filters' : 'No entries yet'}</h3>
-          <p>${all.length ? 'Try clearing the filters to see everything.' : 'Saved entries will appear here.'}</p>
+          <h3>${all.length ? 'Nothing matches these filters' : waiting ? 'Press Allow to show your saved days' : 'No entries yet'}</h3>
+          <p>${all.length ? 'Try clearing the filters to see everything.' : waiting ? 'Past days are read from your folder once the browser is allowed to open it.' : 'Saved entries will appear here.'}</p>
         </div>`;
       return;
     }
@@ -840,7 +817,7 @@
           </span>
           <span class="amt">
             <b class="${cur === 'USD' ? 'usd' : ''}"><small>${cur}</small>${fmt(e.total)}</b>
-            <span>${isPending ? '<span class="pending-tag">● Waiting to upload</span>' : esc(timeOf(e.createdAt))}</span>
+            <span>${isPending ? '<span class="pending-tag">● Not in folder yet</span>' : esc(timeOf(e.createdAt))}</span>
           </span>
         </button>
         <div class="entry-detail"><div><div class="detail-inner">
@@ -859,17 +836,16 @@
   $('#historyList').addEventListener('click', (ev) => {
     const del = ev.target.closest('[data-del]');
     if (del) {
-      const e = state.entries.find((x) => x.id === del.dataset.del);
+      const e = allEntries().find((x) => x.id === del.dataset.del);
       if (!e) return;
-      confirmBox('Delete this entry?', `${money(curOf(e), e.total)} given to ${e.name} (${e.department}) will be removed from the history for everyone.`, 'Delete', () => {
+      confirmBox('Delete this entry?', `${money(curOf(e), e.total)} given to ${e.name} (${e.department}) will be removed from the history and from that day's files.`, 'Delete', () => {
         const tomb = { ...e, deleted: true, updatedAt: new Date().toISOString() };
-        state.entries = merge(state.entries, [tomb]);
-        state.pending.push(tomb);
+        keepLocally([tomb]);
         state.openId = null;
-        persist();
         renderHistory();
+        updateStatus();
         toast('Entry deleted');
-        sync();
+        saveAll({ ask: true });
       });
       return;
     }
@@ -925,9 +901,8 @@
   });
 
   // ---------- Export ----------
-  $('#exportCsv').addEventListener('click', () => {
-    const list = filtered();
-    if (!list.length) return toast('There is nothing to download', 'warn');
+  // Excel-friendly CSV of a list of entries
+  function buildCsv(list) {
     const q = (v) => `"${String(v).replace(/"/g, '""')}"`;
     // Only include note columns for the currencies in the list
     const curs = sumByCurrency(list).map(([c]) => c);
@@ -940,12 +915,19 @@
       lines.push([e.date, e.name, e.department, c, ...cols.map(([cc, d]) => (cc === c && e.counts && e.counts[d]) || ''), e.notes || 0, e.total, new Date(e.createdAt).toLocaleString()].map(q).join(','));
     }
     for (const [c, v] of sumByCurrency(list)) lines.push(['', '', `TOTAL ${c}`, c, ...blank, '', v, ''].map(q).join(','));
-    const blob = new Blob(['﻿' + lines.join('\r\n')], { type: 'text/csv;charset=utf-8' });
+    return '﻿' + lines.join('\r\n') + '\r\n';
+  }
+  function downloadFile(name, text, type) {
     const a = document.createElement('a');
-    a.href = URL.createObjectURL(blob);
-    a.download = `cash-book-${isoDate()}.csv`;
+    a.href = URL.createObjectURL(new Blob([text], { type }));
+    a.download = name;
     document.body.appendChild(a); a.click(); a.remove();
     setTimeout(() => URL.revokeObjectURL(a.href), 2000);
+  }
+  $('#exportCsv').addEventListener('click', () => {
+    const list = filtered();
+    if (!list.length) return toast('There is nothing to download', 'warn');
+    downloadFile(`Cash Book export ${isoDate()}.csv`, buildCsv(list), 'text/csv;charset=utf-8');
     toast('Downloaded — open it with Excel');
   });
 
@@ -956,7 +938,7 @@
     $('.tabs-inner').dataset.active = tab;
     $$('.tab').forEach((t) => { const on = t.dataset.tab === tab; t.classList.toggle('active', on); t.setAttribute('aria-selected', String(on)); });
     $$('.view').forEach((v) => { const on = v.id === `view-${tab}`; v.hidden = !on; v.classList.toggle('active', on); });
-    if (tab === 'history') { renderHistory(); sync(); }
+    if (tab === 'history') { renderHistory(); if (state.folderOk) loadFolder(); }
     window.scrollTo({ top: 0, behavior: 'smooth' });
     try { history.replaceState(null, '', tab === 'history' ? '#history' : location.pathname + location.search); } catch { /* ignore */ }
   }
@@ -993,15 +975,13 @@
   });
 
   // ============================================================
-  //  Connection settings
+  //  Save folder dialog
   // ============================================================
   function openSettings() {
-    state.replacing = false;
     renderConnStatus();
     $('#settingsOverlay').hidden = false;
   }
   $('#syncPill').addEventListener('click', openSettings);
-  $$('[data-open="settings"]').forEach((b) => b.addEventListener('click', openSettings));
   $('#settingsOverlay').addEventListener('click', (e) => {
     if (e.target.id === 'settingsOverlay' || e.target.closest('[data-close]')) $('#settingsOverlay').hidden = true;
   });
@@ -1009,60 +989,62 @@
   function renderConnStatus() {
     const box = $('#connStatus');
     if (!box) return;
-    const connected = !!state.token;
-    $('#connectedBox').hidden = !connected;
-    let msg;
-    const askKey = !connected || state.replacing || state.syncState === 'error';
-    $('#connectBox').hidden = !askKey;
-    $('#replaceKey').hidden = askKey;
-    if (!connected) msg = 'Not connected — entries are kept on this device only';
-    else if (state.syncState === 'error') msg = 'The access key is not working (it may have expired). Enter a new one below — every device will pick it up.';
-    else if (state.pending.length) msg = `Connected · ${state.pending.length} entr${state.pending.length === 1 ? 'y' : 'ies'} waiting to upload`;
-    else msg = `Connected · all entries saved${state.lastSync ? ` (checked ${timeOf(state.lastSync.toISOString())})` : ''}`;
-    box.className = `conn-status ${connected && state.syncState !== 'error' ? 'ok' : 'no'}`;
+    const st = currentStatus();
+    const n = unsavedCount();
+    const name = state.dir ? state.dir.name : 'Cash Book';
+    const t = isoDate();
+    $('#pathExample').textContent = `${name}\\${dayParts(t).join('\\')}\\${csvName(t)}`;
+    const msg = {
+      saved: `Saving into the "${name}" folder · everything is saved`,
+      unsaved: FS_OK ? `${n} entr${n === 1 ? 'y' : 'ies'} not saved to the "${name}" folder yet` : `${n} entr${n === 1 ? 'y' : 'ies'} only in this browser`,
+      nofolder: 'No folder chosen yet — entries are kept in this browser until you choose one',
+      reconnect: `Press "Save to folder now" and choose Allow to keep saving into "${name}"`,
+      browser: 'This browser cannot save into folders. Use Chrome or Edge on the accounts computer.',
+    }[st];
+    box.className = `conn-status ${st === 'saved' ? 'ok' : 'no'}`;
     box.innerHTML = `<span class="dot"></span><span>${esc(msg)}</span>`;
+    $('#chooseFolder').textContent = state.dir ? 'Change save folder' : 'Choose save folder';
+    $('#chooseFolder').hidden = !FS_OK;
+    $('#saveNow').textContent = FS_OK ? 'Save to folder now' : 'Download files';
   }
 
-  async function connect(token, { silent = false } = {}) {
-    token = token.trim();
-    if (!token) { toast('Please paste the access key', 'warn'); return false; }
-    const btn = $('#connectBtn');
-    btn.disabled = true; btn.textContent = 'Checking…';
+  $('#saveNow').addEventListener('click', async () => {
+    if (!FS_OK) return downloadUnsaved();
+    if (!state.dir) return chooseFolder();
+    if (!state.folderOk) return allowFolder();
+    await saveAll({ ask: true, quiet: false });
+  });
+  $('#chooseFolder').addEventListener('click', () => chooseFolder());
+
+  // One-time copy of the records kept by the old online version of the app
+  $('#importOld').addEventListener('click', async () => {
+    const btn = $('#importOld');
+    btn.disabled = true; btn.textContent = 'Importing…';
     try {
-      const r = await fetch(API, { headers: ghHeaders(token), cache: 'no-store' });
-      if (!r.ok) throw httpError(r);
-      const setAt = Date.now();
-      setToken(token, { source: 'manual', setAt });
-      state.replacing = false;
-      $('#tokenInput').value = '';
-      $('#settingsOverlay').hidden = true;
-      let shared = false;
-      try { shared = await publishShared(token, setAt); } catch { /* shared again on next start */ }
-      if (!silent) toast(shared ? 'Connected! Every phone and computer will now connect by itself.' : 'Connected! Uploading entries…');
-      await sync();
-      return true;
-    } catch (err) {
-      toast(err.status === 401 || err.status === 404 ? 'That key did not work. Please check it and try again.' : 'Could not reach GitHub. Check the internet.', 'warn');
-      return false;
+      const r = await fetch(OLD_RECORDS_URL, { cache: 'no-store' });
+      if (!r.ok) throw new Error(`HTTP ${r.status}`);
+      const list = (await r.json()).filter((e) => e && e.id && e.date);
+      const known = new Map(allEntries().map((e) => [e.id, e.updatedAt]));
+      const fresh = list.filter((e) => known.get(e.id) !== e.updatedAt);
+      if (fresh.length) keepLocally(fresh);
+      renderHistory();
+      updateNameList();
+      updateStatus();
+      if (!fresh.length) toast('All old records are already here');
+      else if (FS_OK && state.dir) { await saveAll({ ask: true }); toast(`Imported ${list.filter((e) => !e.deleted).length} old records into the folder`); }
+      else toast(`Imported ${fresh.length} old records — now choose a save folder`);
+    } catch {
+      toast('The old records could not be found online (the old project may already be deleted).', 'warn');
     } finally {
-      btn.disabled = false; btn.textContent = 'Connect';
+      btn.disabled = false; btn.textContent = 'Import old records';
     }
-  }
-  $('#connectBtn').addEventListener('click', () => connect($('#tokenInput').value));
-  $('#tokenInput').addEventListener('keydown', (e) => { if (e.key === 'Enter') connect(e.target.value); });
-  $('#syncNow').addEventListener('click', () => sync({ quiet: false }));
-  $('#replaceKey').addEventListener('click', () => {
-    state.replacing = true;
-    renderConnStatus();
-    $('#tokenInput').focus();
   });
 
   // ============================================================
   //  Start up
   // ============================================================
-  function init() {
+  async function init() {
     $('#todayLabel').textContent = prettyDate(isoDate());
-    $('#repoNameLabel').textContent = CONFIG.repo;
     renderDeptOptions();
     loadDraft();
     setCurrency(state.currency, { animate: false });
@@ -1072,33 +1054,28 @@
     renderCalc();
     renderHistory();
     updateNameList();
-    setSyncState(state.token ? 'idle' : 'local');
     if (window.matchMedia('(min-width: 900px)').matches) {
       $('#filtersMore').classList.add('open');
       $('#toggleFilters').setAttribute('aria-expanded', 'true');
     }
+    if (location.hash === '#history') showTab('history');
 
-    // One-tap setup link: …/#connect=KEY
-    const handleLink = () => {
-      const m = location.hash.match(/^#connect=(.+)$/);
-      if (!m) return false;
-      try { history.replaceState(null, '', location.pathname + location.search); } catch { /* ignore */ }
-      connect(decodeURIComponent(m[1]));
-      return true;
-    };
-    window.addEventListener('hashchange', handleLink);
-    if (!handleLink()) {
-      if (location.hash === '#history') showTab('history');
-      ensureSharedKey().finally(() => sync());
+    // Reconnect to the folder chosen on an earlier visit
+    if (FS_OK) {
+      state.dir = await idbGet('root');
+      state.folderOk = await folderPermission(false);
     }
+    updateStatus();
+    if (state.folderOk) { await loadFolder(); await saveAll(); }
 
-    setInterval(async () => {
-      // A device with no key keeps looking for the shared one
-      if (!state.token) await ensureSharedKey();
-      sync();
-    }, SYNC_EVERY_MS);
-    window.addEventListener('online', () => sync());
-    document.addEventListener('visibilitychange', () => { if (!document.hidden) sync(); });
+    // Keep trying to save anything left over (e.g. after the folder was unavailable)
+    setInterval(() => { if (unsavedCount() && state.folderOk) saveAll(); }, 60000);
+    document.addEventListener('visibilitychange', async () => {
+      if (document.hidden || !state.dir) return;
+      state.folderOk = await folderPermission(false);
+      updateStatus();
+      if (state.folderOk && unsavedCount()) saveAll();
+    });
 
     // Keep "today" fresh if the app stays open past midnight
     setInterval(() => {
@@ -1108,6 +1085,7 @@
         if (dateInput.value === prev) { dateInput.value = t; updateDateHint(); }
         $('#todayLabel').dataset.day = t;
         $('#todayLabel').textContent = prettyDate(t);
+        updateStatus();
       }
     }, 60000);
     $('#todayLabel').dataset.day = isoDate();

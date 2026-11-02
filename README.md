@@ -1,49 +1,42 @@
 # Cash Book
 
-A very simple app for recording cash handed out, by note denomination.
-
-**Live app:** https://tmoosabhoy6.github.io/Accounts-denomination-app/
+A simple app for recording cash handed out, by note, in Iraqi Dinar (IQD) or US Dollar (USD).
 
 ## The two screens
 
-1. **New Entry** – count the notes (50,000 · 25,000 · 10,000 · 5,000 · 1,000 · 500 · 250).
-   Each line works out its amount and the total is shown at the bottom right.
-   Then write who received the cash, pick the department, and press **Save Entry**.
-   The date is filled in with today's date automatically.
-2. **History** – every saved entry, grouped by day. Filter by name, department,
-   date range, and by amount (more than / less than). Tap an entry to see its
-   note breakdown. **Download for Excel** saves the filtered list as a spreadsheet file.
+1. **New Entry**
+   - Pick **IQD** or **USD**, then count the notes. Each line works out its amount, and the total is shown at the bottom.
+   - Write who received the cash, pick the department and press **Save Entry**. The date fills in with today automatically.
+   - New departments can be added from the bottom of the department list.
+2. **History**
+   - Every saved entry, grouped by day, with the date shown clearly on each one.
+   - Filter by currency, name, department, date range and amount.
+   - Tap an entry to see its notes. **Download for Excel** saves the filtered list.
 
-## Where the data is kept
+## Where the records are kept
 
-Everything is stored in this repository, in [`data/entries.json`](data/entries.json).
-Each save writes to that file straight away, and the app checks for new
-entries every 30 seconds, so several phones can be used at the same time.
-If the internet drops, entries stay on the phone and upload automatically
-when it is back.
+There is no online database. Records are kept on the accounts computer:
 
-## Access key (entered once, on any one device)
+- **In the browser.** Each entry is kept the moment it is saved.
+- **In the chosen folder.** Each day is written into its own dated folder:
 
-Saving to GitHub needs an access key. It only has to be entered **once, on any
-device**: the app then stores it (encoded) in `data/app-config.json`, and every
-other phone or computer that opens the app picks it up and connects by itself.
+  ```
+  Cash Book\
+    2026\
+      11 - November\
+        2026-11-02\
+          Cash Book 2026-11-02.csv          ← open this in Excel
+          Cash Book 2026-11-02 - data.json  ← read back by the History screen
+    Cash Book departments.json              ← departments added in the app
+  ```
 
-To create a key:
+Entries are written into the folder automatically. If the browser is waiting for permission, a banner appears; press **Allow** or **Save now**.
 
-1. Go to <https://github.com/settings/personal-access-tokens/new>.
-2. **Repository access** → *Only select repositories* → `Accounts-denomination-app`.
-3. **Permissions → Contents** → *Read and write*. Pick the longest expiration offered.
-4. Generate, copy the key, open the app, tap the status button at the top right and paste it.
+**Use Chrome or Edge on the accounts computer.** Other browsers and phones can't save into folders. On those, the app downloads the day's Excel file instead.
 
-When the key expires, the status button shows **Key not working**. Enter a new key
-on any one device and all the others switch to it automatically.
+**Don't clear the browser's history or site data** while the top-right button says "not saved yet".
 
-> Because the repository is public, the shared key can be read by anyone who
-> looks at `data/app-config.json`. Keep the key limited to this one repository
-> with only *Contents* permission, so the most it can do is change files in this
-> project (everything stays recoverable through the git history).
+## Publishing the site (GitHub Pages)
 
-## Hosting
-
-The site is published to GitHub Pages by `.github/workflows/pages.yml` on every
-push to `main` (changes to `data/` are skipped, since the app reads the data live).
+Go to **Settings → Pages**, set Source to **Deploy from a branch**, pick branch `main` and folder `/ (root)`, and click **Save**.
+The site appears at `https://<username>.github.io/<repository-name>/` after a minute or two.
